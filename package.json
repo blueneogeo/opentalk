@@ -1,0 +1,13 @@
+{
+  "name": "opentalk",
+  "version": "1.0.0",
+  "description": "OpenCode plugin that speaks a short spoken summary when an agent finishes responding.",
+  "type": "module",
+  "scripts": {
+    "install": "./build.sh install",
+    "uninstall": "./build.sh uninstall"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.17.16"
+  }
+}
