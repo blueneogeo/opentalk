@@ -15,6 +15,10 @@ interface TtsConfig {
   baseUrl?: string
 }
 
+type SpeakDirective =
+  | { type: "instruction"; value: string }   // summarize via speak agent
+  | { type: "full" }                          // speak the response raw
+
 // ── Inline YAML parser for the tts block (avoids external dependency) ──
 
 function parseTtsBlock(frontmatter: string): Record<string, string> | null {
@@ -46,7 +50,7 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
   // ── Global state ──
   let speakEnabled = true                     // /toggle-speak flips this
   const sessionAgent = new Map<string, string>()
-  const speakCache = new Map<string, string | null>()
+  const speakDirectiveCache = new Map<string, SpeakDirective | null>()
 
   // ── Lazy-loaded TTS config (never blocks startup) ──
   let _ttsConfig: TtsConfig | null = null
@@ -155,9 +159,9 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
     return _ttsConfig
   }
 
-  // ── Read speak instruction from agent .md files ──
-  const getSpeakInstruction = (agentName: string): string | null => {
-    const cached = speakCache.get(agentName)
+  // ── Read speak directive from agent .md files ──
+  const getSpeakDirective = (agentName: string): SpeakDirective | null => {
+    const cached = speakDirectiveCache.get(agentName)
     if (cached !== undefined) return cached
 
     const paths = [
@@ -171,13 +175,21 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
         if (!existsSync(p)) continue
         const content = readFileSync(p, "utf-8")
         const match = content.match(/^speak:\s*(.*)$/m)
-        const result = match ? match[1].trim() : null
-        speakCache.set(agentName, result)
-        return result
+        if (!match) {
+          speakDirectiveCache.set(agentName, null)
+          return null
+        }
+        const value = match[1].trim()
+        const directive: SpeakDirective =
+          value === "true"
+            ? { type: "full" }
+            : { type: "instruction", value }
+        speakDirectiveCache.set(agentName, directive)
+        return directive
       } catch { /* try next */ }
     }
 
-    speakCache.set(agentName, null)
+    speakDirectiveCache.set(agentName, null)
     return null
   }
 
@@ -301,12 +313,24 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
       const agentName = sessionAgent.get(sessionID)
       if (!agentName || agentName === AGENT_NAME) return
 
-      const instruction = getSpeakInstruction(agentName)
-      if (!instruction) return
+      const directive = getSpeakDirective(agentName)
+      if (!directive) return
 
       const responseText = await extractResponseText(sessionID)
       if (!responseText) return
 
+      // speak: true — speak the full response raw, no summarization
+      if (directive.type === "full") {
+        const truncated = responseText.length > 1000
+          ? responseText.slice(0, 997) + "..."
+          : responseText
+        doSpeak(truncated)
+        await injectMessage(sessionID, `🔊 ${truncated}`)
+        return
+      }
+
+      // speak: "..." — summarize via speak agent
+      const instruction = directive.value
       try {
         const ttsSession = await client.session.create({ body: { title: "OpenTalk" } })
         const ttsResult = await client.session.prompt({

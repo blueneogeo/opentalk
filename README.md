@@ -68,7 +68,9 @@ OpenTalk lets you define a **per-agent spoken summary instruction**. After an ag
 
 ## How It Works
 
-1. **Agent markdown** has a `speak` property in its YAML frontmatter (the prompt for the speak agent).
+1. **Agent markdown** has a `speak` property in its YAML frontmatter. Two forms:
+   - `speak: "summarize..."` — the prompt for the speak agent (summarized output)
+   - `speak: true` — skip summarization, speak the full response raw
 2. **Plugin** tracks which agent handles each session via the `chat.message` hook.
 3. On **`session.idle`**, the plugin reads the agent's `speak` instruction from its `.md` file (cached).
 4. Plugin extracts the assistant's full text response from the session messages.
@@ -122,7 +124,17 @@ speak: "Give a 10-word status update on what you just did"
 ---
 ```
 
-No commands to run, no configuration needed beyond the `speak` line. Different agents get different instructions:
+No commands to run, no configuration needed beyond the `speak` line. The `speak` property accepts two forms:
+
+```yaml
+# Summarized — goes through the speak agent for a one-sentence summary
+speak: "Give a 10-word status update on what you just did"
+
+# Full raw — speaks the entire response directly, no summarization
+speak: true
+```
+
+Different agents get different instructions:
 
 ```yaml
 # chat agent — conversational summary
@@ -133,6 +145,9 @@ speak: "Give a 10-word status update on what you just did"
 
 # plan agent — key finding
 speak: "In one sentence, tell me the key finding or recommendation from your analysis"
+
+# any agent — speak the full response raw
+speak: true
 ```
 
 ## Speak Agent Configuration
