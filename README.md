@@ -135,9 +135,109 @@ speak: "Give a 10-word status update on what you just did"
 speak: "In one sentence, tell me the key finding or recommendation from your analysis"
 ```
 
-## Speak Agent
+## Speak Agent Configuration
 
-A dedicated hidden subagent at `~/.config/opencode/agents/speak.md`. Uses a fast/cheap model. User can override by placing their own `speak.md` in the same directory — the installer won't overwrite existing files.
+The speak agent (`~/.config/opencode/agents/speak.md`) defines both the summarization behavior AND the TTS engine via its YAML frontmatter. Here's the full breakdown:
+
+### TTS Engine Settings (`tts:` block)
+
+If the `tts:` block is absent, the plugin falls back to macOS `say`. Each field is explained below:
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `engine` | No | `say` | `say` (macOS built-in) or `openrouter` (OpenAI-compatible API) |
+| `model` | No | `hexgrad/kokoro-82m` | OpenRouter TTS model slug. See [available models](https://openrouter.ai/collections/text-to-speech-models) |
+| `voice` | No | `af_bella` | Voice identifier — model-specific. See voices section below |
+| `speed` | No | `1.0` | Playback speed (0.25–4.0). Only OpenAI models support this; Kokoro ignores it |
+| `response_format` | No | `mp3` | Audio output: `mp3` (compressed) or `pcm` (raw) |
+| `api_provider` | No | — | References a provider in `opencode.json` for API key + base URL |
+| `api_key` | No | — | Fallback: direct key as `${ENV_VAR}` or raw string |
+| `base_url` | No | `https://openrouter.ai/api/v1` | Fallback: custom endpoint URL |
+
+### Credential Resolution Order
+
+The plugin resolves TTS credentials in this priority:
+
+1. **`api_provider`** → looks up key + baseURL from `opencode.json` provider registry
+2. **`api_key` + `base_url`** → direct values in speak.md (supports `${ENV_VAR}`)
+3. **`$OPENROUTER_API_KEY`** → environment variable fallback
+4. None found → falls back to `engine: say`
+
+### Kokoro Voices
+
+Kokoro uses the naming pattern `{language}{gender}_{name}`. 54 voices across 8 languages:
+
+| Voice | Character | Language |
+|-------|-----------|----------|
+| `af_bella` | Warm, natural **(recommended)** | US English |
+| `af_nicole` | Whisper-like, technical | US English |
+| `af_sarah` | Professional | US English |
+| `af_sky` | Bright | US English |
+| `am_adam` | Friendly male | US English |
+| `am_michael` | Deep male | US English |
+| `bf_emma` | Proper | British English |
+| `bf_isabella` | Soft | British English |
+| `bm_george` | Formal male | British English |
+
+Also available: Japanese, Mandarin Chinese, Spanish, French, Hindi, Italian, Brazilian Portuguese.
+
+### OpenAI Voices
+
+If using an OpenAI model instead: `alloy`, `echo`, `fable`, `onyx`, `nova`, `shimmer`.
+
+### Configuration Examples
+
+**macOS built-in speech only (no API key needed):**
+```yaml
+---
+tts:
+  engine: say
+---
+```
+
+**OpenRouter with provider reference:**
+```yaml
+---
+tts:
+  engine: openrouter
+  model: hexgrad/kokoro-82m
+  voice: af_bella
+  speed: 1.0
+  response_format: mp3
+  api_provider: openrouter
+---
+```
+
+**OpenRouter with environment variable (no provider config needed):**
+```yaml
+---
+tts:
+  engine: openrouter
+  model: hexgrad/kokoro-82m
+  voice: af_bella
+  response_format: mp3
+  api_key: ${OPENROUTER_API_KEY}
+---
+```
+
+**High-quality option (OpenAI model via OpenRouter):**
+```yaml
+---
+tts:
+  engine: openrouter
+  model: openai/gpt-4o-mini-tts
+  voice: nova
+  speed: 1.0
+  response_format: mp3
+  api_provider: openrouter
+---
+```
+
+### User Overrides
+
+Your custom `~/.config/opencode/agents/speak.md` takes priority over the shipped version. The install script won't overwrite it. This lets you change the model, voice, or LLM system prompt without touching the plugin code.
+
+Project-level overrides are also supported: place a `speak.md` in `.opencode/agents/` within your project directory.
 
 ## Project Structure
 
