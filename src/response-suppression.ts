@@ -1,7 +1,13 @@
 /**
  * Response suppression — intercepts globalThis.Response construction
- * to mute "Failed to send prompt" / "UnknownError" errors that the
- * speak subagent would otherwise surface to the user.
+ * to mute the error that the framework generates when we abort a
+ * chat.message hook via throw.
+ *
+ * Uses a one-shot flag instead of a timed window:
+ * - arm before throwing
+ * - the very next 4xx/5xx Response gets consumed (rewritten to 200 ok)
+ * - flag self-clears — subsequent errors pass through normally
+ * - safety timeout clears stale flags after 5 seconds
  *
  * This is an intentional workaround for the current OpenCode plugin
  * architecture. When the framework adds a built-in error-suppression
@@ -11,10 +17,36 @@ import { log } from "./logger"
 
 const OriginalResponse = globalThis.Response
 
-let _suppress = false
+/** Number of pending suppressions. Each call to activate() arms one shot. */
+let _pending = 0
 
-export function setResponseSuppression(value: boolean): void {
-  _suppress = value
+/** Safety timeout ID for clearing stale suppressions. */
+let _safetyTimeout: ReturnType<typeof setTimeout> | undefined
+
+const SAFETY_TIMEOUT_MS = 5_000
+
+/**
+ * Arm the suppressor to consume the next framework error.
+ * Call immediately before throw to suppress the error the
+ * framework generates in response.
+ */
+export function activateSuppression(): void {
+  _pending++
+  log("SUPPRESS", "armed (pending=" + _pending + ")")
+
+  // Safety net: clear any stale suppressions after the timeout
+  if (_safetyTimeout) clearTimeout(_safetyTimeout)
+  _safetyTimeout = setTimeout(() => {
+    if (_pending > 0) {
+      log("SUPPRESS", "safety timeout — clearing", _pending, "pending")
+      _pending = 0
+    }
+  }, SAFETY_TIMEOUT_MS)
+}
+
+/** @deprecated Use activateSuppression() instead. */
+export function setResponseSuppression(_value: boolean): void {
+  // No-op — kept for backward compat during migration
 }
 
 export function installResponseSuppression(): void {
@@ -23,10 +55,6 @@ export function installResponseSuppression(): void {
     body?: unknown,
     init?: ResponseInit & { status?: number },
   ) {
-    if (!_suppress) {
-      return new OriginalResponse(body as BodyInit | null | undefined, init)
-    }
-
     let bodyStr = ""
     try {
       if (typeof body === "string") {
@@ -36,7 +64,11 @@ export function installResponseSuppression(): void {
         // Bun encodes Response bodies as objects with numeric keys (char codes)
         if (
           keys.length > 2 &&
-          keys.every((k, i) => String(i) === k && typeof (body as Record<string, unknown>)[k] === "number")
+          keys.every(
+            (k, i) =>
+              String(i) === k &&
+              typeof (body as Record<string, unknown>)[k] === "number",
+          )
         ) {
           bodyStr = String.fromCharCode(
             ...Object.values(body as Record<number, number>),
@@ -58,29 +90,14 @@ export function installResponseSuppression(): void {
       bodyStr.slice(0, 300),
     )
 
-    if (init?.status !== undefined && init.status >= 400) {
-      // Match on stable error type names
-      if (
-        bodyStr.includes('"name":"UnknownError"') ||
-        bodyStr.includes('"name":"InternalServerError"')
-      ) {
-        log("SUPPRESSED", bodyStr.slice(0, 200))
-        return new OriginalResponse(JSON.stringify({ ok: true }), {
-          ...init,
-          status: 200,
-        })
-      }
-      // Fallback: match on known display messages
-      if (
-        bodyStr.includes("Failed to send prompt") ||
-        bodyStr.includes("Unexpected server error")
-      ) {
-        log("SUPPRESSED (message match)", bodyStr.slice(0, 200))
-        return new OriginalResponse(JSON.stringify({ ok: true }), {
-          ...init,
-          status: 200,
-        })
-      }
+    // One-shot suppression: consume the next error response
+    if (_pending > 0 && init?.status !== undefined && init.status >= 400) {
+      _pending--
+      log("SUPPRESSED", "(pending=" + _pending + ")", bodyStr.slice(0, 200))
+      return new OriginalResponse(JSON.stringify({ ok: true }), {
+        ...init,
+        status: 200,
+      })
     }
 
     return new OriginalResponse(body as BodyInit | null | undefined, init)

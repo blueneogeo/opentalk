@@ -9,7 +9,7 @@ import { log } from "./logger"
 import {
   installResponseSuppression,
   uninstallResponseSuppression,
-  setResponseSuppression,
+  activateSuppression,
 } from "./response-suppression"
 import { createConfigLoader } from "./config"
 import { createDirectiveResolver } from "./directive"
@@ -19,7 +19,6 @@ import { doSpeak } from "./tts-engines/registry"
 // ── Constants ──
 
 const AGENT_NAME = "speak"
-const SUPPRESSION_TIMEOUT_MS = 2_000
 
 // ── Sentinel error ──
 
@@ -101,14 +100,13 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
 
       if (fullText === "/toggle-speak") {
         speakEnabled = !speakEnabled
-        setResponseSuppression(true)
-        setTimeout(() => setResponseSuppression(false), SUPPRESSION_TIMEOUT_MS)
         await injectMessage(
           client,
           input.sessionID,
           `🔊 Spoken summaries ${speakEnabled ? "enabled" : "disabled"}`,
         )
-        log("/toggle-speak — raising suppress flag")
+        log("/toggle-speak — activating suppression")
+        activateSuppression()
         throw new OpenTalkAbortError()
       }
 
@@ -119,9 +117,8 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
           doSpeak(text, cfg)
           await injectMessage(client, input.sessionID, `🔊 ${text}`)
         }
-        setResponseSuppression(true)
-        setTimeout(() => setResponseSuppression(false), SUPPRESSION_TIMEOUT_MS)
-        log("/speak", text, "— raising suppress flag")
+        log("/speak", text, "— activating suppression")
+        activateSuppression()
         throw new OpenTalkAbortError()
       }
     },
