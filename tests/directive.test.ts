@@ -20,7 +20,6 @@ describe("getSpeakDirective", () => {
   })
 
   afterEach(() => {
-    // Clear any env overrides
     delete process.env.OPENROUTER_API_KEY
   })
 
@@ -30,19 +29,19 @@ describe("getSpeakDirective", () => {
     expect(getSpeakDirective("nonexistent")).toBeNull()
   })
 
-  it("parses speak: true as full directive", () => {
+  it("parses speak: true as full directive (default extract mode)", () => {
     vi.mocked(fs.existsSync).mockReturnValue(true)
-    vi.mocked(fs.readFileSync).mockReturnValue('---\nspeak: true\n---\ncontent')
+    vi.mocked(fs.readFileSync).mockReturnValue("---\nspeak: true\n---\ncontent")
 
     const { getSpeakDirective } = makeResolver()
     const result = getSpeakDirective("test-agent")
-    expect(result).toEqual({ type: "full" })
+    expect(result).toEqual({ type: "full", mode: "extract" })
   })
 
-  it("parses speak: string as instruction directive", () => {
+  it("parses speak: string as instruction directive (default extract mode)", () => {
     vi.mocked(fs.existsSync).mockReturnValue(true)
     vi.mocked(fs.readFileSync).mockReturnValue(
-      '---\nspeak: Summarize in one sentence\n---\ncontent',
+      "---\nspeak: Summarize in one sentence\n---\ncontent",
     )
 
     const { getSpeakDirective } = makeResolver()
@@ -50,7 +49,30 @@ describe("getSpeakDirective", () => {
     expect(result).toEqual({
       type: "instruction",
       value: "Summarize in one sentence",
+      mode: "extract",
     })
+  })
+
+  it("parses speak_mode: subagent for backward compat", () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      "---\nspeak: true\nspeak_mode: subagent\n---\ncontent",
+    )
+
+    const { getSpeakDirective } = makeResolver()
+    const result = getSpeakDirective("test-agent")
+    expect(result).toEqual({ type: "full", mode: "subagent" })
+  })
+
+  it("ignores invalid speak_mode values, defaults to extract", () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      "---\nspeak: true\nspeak_mode: foobar\n---\ncontent",
+    )
+
+    const { getSpeakDirective } = makeResolver()
+    const result = getSpeakDirective("test-agent")
+    expect(result).toEqual({ type: "full", mode: "extract" })
   })
 
   it("returns null when no speak property exists", () => {
@@ -63,13 +85,12 @@ describe("getSpeakDirective", () => {
 
   it("caches results per agent name", () => {
     vi.mocked(fs.existsSync).mockReturnValue(true)
-    vi.mocked(fs.readFileSync).mockReturnValue('---\nspeak: true\n---\ncontent')
+    vi.mocked(fs.readFileSync).mockReturnValue("---\nspeak: true\n---\ncontent")
 
     const { getSpeakDirective } = makeResolver()
     getSpeakDirective("cached-agent")
     getSpeakDirective("cached-agent")
 
-    // Should only read the file once
     expect(fs.readFileSync).toHaveBeenCalledTimes(1)
   })
 })

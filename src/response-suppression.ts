@@ -44,11 +44,6 @@ export function activateSuppression(): void {
   }, SAFETY_TIMEOUT_MS)
 }
 
-/** @deprecated Use activateSuppression() instead. */
-export function setResponseSuppression(_value: boolean): void {
-  // No-op — kept for backward compat during migration
-}
-
 export function installResponseSuppression(): void {
   globalThis.Response = function (
     this: unknown,
@@ -82,13 +77,6 @@ export function installResponseSuppression(): void {
     } catch (e) {
       bodyStr = "[err:" + String(e) + "]"
     }
-
-    log(
-      "RESP",
-      init?.status ?? "?",
-      "len=" + bodyStr.length,
-      bodyStr.slice(0, 300),
-    )
 
     // One-shot suppression: consume the next error response
     if (_pending > 0 && init?.status !== undefined && init.status >= 400) {

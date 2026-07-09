@@ -1,8 +1,9 @@
 /**
  * OpenTalk — OpenCode plugin that speaks short summaries when agents finish.
  *
- * Hooks into `chat.message` to track which agent handles each session,
- * and `session.idle` to generate + speak a conversational summary.
+ * Two modes (configured per agent via `speak_mode:` frontmatter):
+ * - extract (default): agent produces <speak> tags, plugin extracts them
+ * - subagent: plugin spawns the speak subagent to summarize the response
  */
 import type { Plugin } from "@opencode-ai/plugin"
 import { log } from "./logger"
@@ -11,21 +12,15 @@ import {
   uninstallResponseSuppression,
   activateSuppression,
 } from "./response-suppression"
-import { createConfigLoader } from "./config"
+import { createConfigLoader, getSpeakSystem } from "./config"
 import { createDirectiveResolver } from "./directive"
 import { extractResponseText, injectMessage } from "./session"
 import { doSpeak } from "./tts-engines/registry"
-
-// ── Constants ──
+import type { SpeakDirective } from "./types"
 
 const AGENT_NAME = "speak"
+const SPEAK_TAG_RE = /spoken:\s*(.+?)(?:\n|$)/
 
-// ── Sentinel error ──
-
-/**
- * Thrown to abort a chat.message hook after processing a
- * /toggle-speak or /speak command. The framework catches this.
- */
 class OpenTalkAbortError extends Error {
   constructor() {
     super("OPENTALK")
@@ -33,15 +28,10 @@ class OpenTalkAbortError extends Error {
   }
 }
 
-// ── Plugin ──
-
 export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
   log("Plugin loaded")
-
-  // ── Response suppression (intentional workaround) ──
   installResponseSuppression()
 
-  // ── Config & caches ──
   const getTtsConfig = createConfigLoader({
     directory,
     async resolveProvider(providerId) {
@@ -56,8 +46,7 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
         if (!provider) return null
         return {
           baseUrl:
-            (provider.options as Record<string, string> | undefined)
-              ?.baseURL,
+            (provider.options as Record<string, string> | undefined)?.baseURL,
           apiKey: provider.key as string | undefined,
         }
       } catch (err) {
@@ -69,24 +58,68 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
 
   const { getSpeakDirective } = createDirectiveResolver(directory)
 
-  // ── State ──
   let speakEnabled = true
   const sessionAgent = new Map<string, string>()
+  const agentsSeeded = new Set<string>()
 
-  // ── Hooks ──
+  function instructionFor(directive: SpeakDirective): string {
+    return directive.type === "full"
+      ? "summarize your full response in one sentence"
+      : directive.value
+  }
+
+  function buildSystemSuffix(directive: SpeakDirective): string | null {
+    if (directive.mode !== "extract") return null
+    const system = getSpeakSystem(directory)
+    return "\n\n" + system.replace("${SPEAK_INSTRUCTION}", instructionFor(directive))
+  }
+
+  function buildReminderSuffix(directive: SpeakDirective): string | null {
+    if (directive.mode !== "extract") return null
+    return "\n\n<system>In your thinking include: spoken: " + instructionFor(directive) + "</system>"
+  }
+
+  async function speakExtracted(responseText: string, sid: string): Promise<void> {
+    const match = responseText.match(SPEAK_TAG_RE)
+    if (!match || !match[1].trim()) return
+    const cfg = await getTtsConfig()
+    await doSpeak(match[1].trim(), cfg)
+    await injectMessage(client, sid, `🔊 ${match[1].trim()}`)
+  }
 
   return {
     dispose: async () => {
       uninstallResponseSuppression()
     },
 
+    "experimental.chat.messages.transform": async (_input, output) => {
+      const messages = (output as Record<string, unknown>).messages as
+        | Array<{ info?: { role?: string; agent?: string }; parts?: Array<Record<string, unknown>> }>
+        | undefined
+      if (!messages || messages.length === 0) return
+
+      const lastMessage = messages[messages.length - 1]
+      if (lastMessage?.info?.role !== "user" || !lastMessage.info.agent) return
+
+      const directive = getSpeakDirective(lastMessage.info.agent)
+      if (!directive) return
+
+      const isFirst = !agentsSeeded.has(lastMessage.info.agent)
+      agentsSeeded.add(lastMessage.info.agent)
+      const suffix = isFirst
+        ? buildSystemSuffix(directive)
+        : buildReminderSuffix(directive)
+      if (!suffix) return
+
+      if (!lastMessage.parts) lastMessage.parts = []
+      lastMessage.parts.push({ type: "text", text: suffix })
+    },
+
     "chat.message": async (input, output) => {
-      // Track which agent handles this session
       if (input.agent) {
         sessionAgent.set(input.sessionID, input.agent)
       }
 
-      // Check for built-in voice commands
       const textParts = output.parts.filter(
         (p: Record<string, unknown>) =>
           p.type === "text" && !p.synthetic && !p.ignored,
@@ -100,12 +133,8 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
 
       if (fullText === "/toggle-speak") {
         speakEnabled = !speakEnabled
-        await injectMessage(
-          client,
-          input.sessionID,
-          `🔊 Spoken summaries ${speakEnabled ? "enabled" : "disabled"}`,
-        )
-        log("/toggle-speak — activating suppression")
+        await injectMessage(client, input.sessionID,
+          `🔊 Spoken summaries ${speakEnabled ? "enabled" : "disabled"}`)
         activateSuppression()
         throw new OpenTalkAbortError()
       }
@@ -117,7 +146,6 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
           doSpeak(text, cfg)
           await injectMessage(client, input.sessionID, `🔊 ${text}`)
         }
-        log("/speak", text, "— activating suppression")
         activateSuppression()
         throw new OpenTalkAbortError()
       }
@@ -129,8 +157,6 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
 
       const { sessionID } = event.properties
       const agentName = sessionAgent.get(sessionID)
-
-      // Guard: skip if no agent tracked or it's the speak agent itself
       if (!agentName || agentName === AGENT_NAME) return
 
       const directive = getSpeakDirective(agentName)
@@ -138,33 +164,29 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
 
       const responseText = await extractResponseText(client, sessionID)
       if (!responseText) return
-
-      // Skip messages we injected ourselves
       if (responseText.startsWith("🔊 ")) return
 
-      if (directive.type === "full") {
-        const truncated =
-          responseText.length > 1000
-            ? responseText.slice(0, 997) + "..."
-            : responseText
+      if (directive.mode === "extract") {
+        await speakExtracted(responseText, sessionID)
+        return
+      }
 
+      if (directive.type === "full") {
+        const truncated = responseText.length > 1000
+          ? responseText.slice(0, 997) + "..."
+          : responseText
         const cfg = await getTtsConfig()
         await doSpeak(truncated, cfg)
         await injectMessage(client, sessionID, `🔊 ${truncated}`)
         return
       }
 
-      // ── Summarization path ──
       const instruction = directive.value
       let ttsSessionId: string | undefined
 
       try {
-        const ttsSession = await client.session.create({
-          body: { title: "OpenTalk" },
-        })
-        const result = (
-          ttsSession as { data?: { id: string } }
-        ).data ?? ttsSession
+        const ttsSession = await client.session.create({ body: { title: "OpenTalk" } })
+        const result = (ttsSession as { data?: { id: string } }).data ?? ttsSession
         if (!result || typeof (result as { id?: string }).id !== "string") {
           console.error("[OpenTalk] failed to create TTS session")
           return
@@ -175,23 +197,19 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
           path: { id: ttsSessionId },
           body: {
             agent: AGENT_NAME,
-            parts: [
-              {
-                type: "text",
-                text: `Instruction: ${instruction}\n\nAssistant response to summarize:\n${responseText}`,
-              },
-            ],
+            parts: [{
+              type: "text",
+              text: `Instruction: ${instruction}\n\nAssistant response to summarize:\n${responseText}`,
+            }],
           },
         })
 
-        const data =
-          (ttsResult as Record<string, unknown>).data ?? ttsResult
+        const data = (ttsResult as Record<string, unknown>).data ?? ttsResult
         const parts = (data as Record<string, unknown>).parts ?? []
         const spoken = (parts as Array<{ type: string; text?: string }>)
           .filter((p) => p.type === "text")
           .map((p) => p.text ?? "")
-          .join(" ")
-          .trim()
+          .join(" ").trim()
 
         if (spoken) {
           const cfg = await getTtsConfig()
@@ -201,13 +219,8 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
       } catch (err) {
         console.error("[OpenTalk] summarization failed:", err)
       } finally {
-        // Always clean up the TTS session, even on error
         if (ttsSessionId) {
-          try {
-            await client.session.delete({ path: { id: ttsSessionId } })
-          } catch {
-            // Best-effort cleanup
-          }
+          try { await client.session.delete({ path: { id: ttsSessionId } }) } catch {}
         }
       }
     },

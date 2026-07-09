@@ -29,7 +29,7 @@ export async function extractResponseText(
       text?: string
     }>
     const text = parts
-      .filter((p) => p.type === "text")
+      .filter((p) => p.type === "text" || p.type === "reasoning")
       .map((p) => p.text ?? "")
       .join("\n")
       .trim()

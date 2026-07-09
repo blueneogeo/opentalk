@@ -1,9 +1,8 @@
 /**
  * TTS configuration loading and parsing.
  *
- * Reads the `tts:` block from the speak agent's YAML frontmatter.
- * Resolves engine credentials from OpenCode providers and returns
- * a validated TtsConfig object.
+ * Reads the `tts:` block and `speak_format:` from the speak agent's
+ * YAML frontmatter.
  */
 import { join } from "node:path"
 import { readFileSync, existsSync } from "node:fs"
@@ -173,6 +172,98 @@ async function loadConfigFromDisk(
   }
 
   return DEFAULT_CONFIG
+}
+
+// ── Speak system prompt extraction ──
+
+/** Default system prompt when no speak_system is configured in speak.md. */
+const DEFAULT_SPEAK_SYSTEM =
+  "<system>\n" +
+  "In your thinking, include a spoken notification:\n" +
+  "spoken: ${SPEAK_INSTRUCTION}\n" +
+  "\n" +
+  "One sentence, under 25 words, first person, conversational.\n" +
+  "</system>"
+
+/**
+ * Extracts the `speak_system:` value from speak.md frontmatter.
+ * Handles YAML `|` literal blocks (multiline) and inline strings.
+ * Returns null if no speak_system is found.
+ */
+function parseSpeakSystem(frontmatter: string): string | null {
+  const lines = frontmatter.split("\n")
+  let inBlock = false
+  let isLiteral = false
+  const valueLines: string[] = []
+
+  for (const line of lines) {
+    if (!inBlock) {
+      if (/^speak_system:\s*\|?\s*$/.test(line.trimStart())) {
+        inBlock = true
+        isLiteral = line.includes("|")
+        continue
+      }
+      const m = line.trimStart().match(/^speak_system:\s*(.+)$/)
+      if (m) return m[1].trim()
+      continue
+    }
+
+    if (isLiteral) {
+      if (line.length > 0 && line[0] !== " " && line[0] !== "\t" && line[0] !== "#") {
+        break
+      }
+      valueLines.push(line)
+    } else {
+      if (line.length > 0 && line[0] !== " " && line[0] !== "\t") {
+        break
+      }
+      valueLines.push(line.trim())
+    }
+  }
+
+  if (valueLines.length === 0) return null
+
+  const minIndent = valueLines
+    .filter((l) => l.trim().length > 0)
+    .reduce((min, l) => {
+      const indent = l.length - l.trimStart().length
+      return indent < min ? indent : min
+    }, Infinity)
+
+  const cleaned = valueLines
+    .map((l) => {
+      if (l.trim().length === 0) return ""
+      return l.slice(Math.min(minIndent, l.length - l.trim().length))
+    })
+    .join("\n")
+    .trim()
+
+  return cleaned || null
+}
+
+let _speakSystem: string | undefined
+
+export function getSpeakSystem(directory: string): string {
+  if (_speakSystem !== undefined) return _speakSystem
+
+  for (const p of searchPaths(directory)) {
+    try {
+      if (!existsSync(p)) continue
+      const content = readFileSync(p, "utf-8")
+      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/)
+      if (!fmMatch) continue
+      const system = parseSpeakSystem(fmMatch[1])
+      if (system) {
+        _speakSystem = system
+        return system
+      }
+    } catch {
+      // Silently continue
+    }
+  }
+
+  _speakSystem = DEFAULT_SPEAK_SYSTEM
+  return DEFAULT_SPEAK_SYSTEM
 }
 
 // ── Public API ──

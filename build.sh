@@ -31,9 +31,8 @@ install() {
 
   mkdir -p "$PLUGINS_DIR" "$AGENTS_DIR" "$OPENTALK_DIR"
 
-  # ── Build bundled plugin ──
-  _info "Building plugin bundle..."
-  ( cd "$SCRIPT_DIR" && node build.mjs )
+  # ── Build first ──
+  build || { _warn "Build failed — fix errors and retry"; exit 1; }
 
   # ── Clean up old loose .ts/.js files from previous versions ──
   if [ -d "$PLUGINS_DIR" ]; then
@@ -220,14 +219,33 @@ status() {
   fi
 }
 
+build() {
+  echo "OpenTalk — building..."
+
+  _info "Typecheck..."
+  ( cd "$SCRIPT_DIR" && npx tsc --noEmit ) || { _warn "Typecheck failed"; return 1; }
+  _ok "Typecheck passed"
+
+  _info "Tests..."
+  ( cd "$SCRIPT_DIR" && npx vitest run ) || { _warn "Tests failed"; return 1; }
+  _ok "Tests passed"
+
+  _info "Bundle..."
+  ( cd "$SCRIPT_DIR" && node build.mjs ) || { _warn "Bundle failed"; return 1; }
+  _ok "Bundle built"
+
+  echo "Build complete."
+}
+
 case "${1:-}" in
   install)   install ;;
   uninstall) uninstall ;;
   start)     start ;;
   stop)      stop ;;
   status)    status ;;
+  build)     build ;;
   *)
-    echo "Usage: $0 {install|uninstall|start|stop|status}"
+    echo "Usage: $0 {install|uninstall|start|stop|status|build}"
     exit 1
     ;;
 esac
