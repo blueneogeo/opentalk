@@ -7,10 +7,11 @@
 // Usage:  node kokoro-server.mjs [--port 8765]
 // Test:   curl http://127.0.0.1:8765/health
 // Speak:  curl -X POST http://127.0.0.1:8765/speak -H "Content-Type: application/json" -d '{"text":"hello","voice":"af_bella"}'
+// Stream: curl -X POST http://127.0.0.1:8765/stream -H "Content-Type: application/json" -d '{"text":"hello","voice":"af_bella"}' | ffplay -nodisp -autoexit -f s16le -ar 24000 -ac 1 -
 //
 
 import { createServer } from "node:http"
-import { KokoroTTS } from "kokoro-js"
+import { KokoroTTS, TextSplitterStream } from "kokoro-js"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 
@@ -51,6 +52,47 @@ async function main() {
     try {
       if (req.method === "GET" && req.url === "/health") {
         json(res, 200, { ok: true, model: "loaded" })
+        return
+      }
+
+      if (req.method === "POST" && req.url === "/stream") {
+        const body = await readBody(req)
+        let payload
+        try { payload = JSON.parse(body) } catch { json(res, 400, { error: "invalid json" }); return }
+
+        const { text, voice } = payload
+        if (!text || !voice) { json(res, 400, { error: "text and voice required" }); return }
+
+        // Stream raw PCM audio via chunked transfer
+        res.writeHead(200, {
+          "Content-Type": "audio/pcm",
+          "Transfer-Encoding": "chunked",
+          "X-Sample-Rate": "24000",
+          "X-Channels": "1",
+          "X-Bits-Per-Sample": "16",
+        })
+
+        const splitter = new TextSplitterStream()
+        const stream = model.stream(splitter)
+
+        // Push entire text, then close
+        for (const word of text.split(/(?<=\s)/)) {
+          splitter.push(word)
+        }
+        splitter.close()
+
+        // Stream audio chunks as they're generated
+        for await (const { audio } of stream) {
+          if (!audio?.samples) continue
+          // Convert Float32Array → Int16Array PCM
+          const pcm = new Int16Array(audio.samples.length)
+          for (let i = 0; i < audio.samples.length; i++) {
+            const s = Math.max(-1, Math.min(1, audio.samples[i]))
+            pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF
+          }
+          res.write(Buffer.from(pcm.buffer))
+        }
+        res.end()
         return
       }
 
