@@ -6,13 +6,15 @@ GREEN="\033[32m"
 RED="\033[31m"
 RESET="\033[0m"
 
-PLUGIN_SRC="$(dirname "$0")/src/opentalk.ts"
-AGENT_SRC="$(dirname "$0")/agents/speak.md"
-SERVER_SRC="$(dirname "$0")/src/kokoro-server.py"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SRC_DIR="$SCRIPT_DIR/src"
+BUNDLE_SRC="$SCRIPT_DIR/dist/opentalk.js"
+AGENT_SRC="$SCRIPT_DIR/agents/speak.md"
+SERVER_SRC="$SRC_DIR/kokoro-server.py"
 PLUGINS_DIR="$HOME/.config/opencode/plugins"
 AGENTS_DIR="$HOME/.config/opencode/agents"
 PLUGIN_DST="$PLUGINS_DIR/opentalk.ts"
-AGENT_DST="$AGENTS_DIR/opentalk-tts.md"
+AGENT_DST="$AGENTS_DIR/speak.md"
 OPENTALK_DIR="$HOME/.opentalk"
 SERVER_DST="$OPENTALK_DIR/kokoro-server.py"
 VENV_DIR="$OPENTALK_DIR/venv"
@@ -20,16 +22,32 @@ PID_FILE="$OPENTALK_DIR/server.pid"
 LOG_FILE="$OPENTALK_DIR/server.log"
 PORT=8765
 
-_ok()   { echo -e "  ${GREEN}✓${RESET} $1"; }
-_info() { echo -e "  ${BOLD}$1${RESET}"; }
-_warn() { echo -e "  ${RED}⚠${RESET} $1"; }
+_ok()   { printf "  ${GREEN}✓${RESET} %s\n" "$1"; }
+_info() { printf "  ${BOLD}%s${RESET}\n" "$1"; }
+_warn() { printf "  ${RED}⚠${RESET} %s\n" "$1"; }
 
 install() {
   echo "OpenTalk — installing..."
 
   mkdir -p "$PLUGINS_DIR" "$AGENTS_DIR" "$OPENTALK_DIR"
 
-  cp "$PLUGIN_SRC" "$PLUGIN_DST"
+  # ── Build bundled plugin ──
+  _info "Building plugin bundle..."
+  ( cd "$SCRIPT_DIR" && node build.mjs )
+
+  # ── Clean up old loose .ts/.js files from previous versions ──
+  if [ -d "$PLUGINS_DIR" ]; then
+    find "$PLUGINS_DIR" -maxdepth 1 -name "*.ts" ! -name "suffix-plugin.ts" -delete 2>/dev/null || true
+    find "$PLUGINS_DIR" -maxdepth 1 -name "*.js" -delete 2>/dev/null || true
+    rm -rf "$PLUGINS_DIR/tts-engines" 2>/dev/null || true
+  fi
+
+  # ── Install the single bundled file ──
+  if [ ! -f "$BUNDLE_SRC" ]; then
+    _warn "Bundle not found at $BUNDLE_SRC — run: node build.mjs"
+    exit 1
+  fi
+  cp "$BUNDLE_SRC" "$PLUGIN_DST"
   _ok "Plugin installed: $PLUGIN_DST"
 
   if [ ! -f "$AGENT_DST" ]; then
@@ -44,29 +62,28 @@ install() {
 
   # ── Set up Python MLX environment ──
   if [ ! -d "$VENV_DIR" ]; then
-    # Install uv if needed
+    # Ensure uv is available
     if ! command -v uv &>/dev/null; then
-      _info "Installing uv (Python package manager)..."
-      curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null || true
-      export PATH="$HOME/.local/bin:$PATH"
+      _info "uv not found — please install it: https://docs.astral.sh/uv/getting-started/installation/"
+      _info "On macOS: curl -LsSf https://astral.sh/uv/install.sh | sh"
     fi
 
     if command -v uv &>/dev/null; then
       _info "Creating Python 3.12 venv (~300MB, one-time)..."
-      uv venv --python 3.12 "$VENV_DIR" 2>/dev/null || {
-        _warn "Python 3.12 not found — trying system Python"
-        uv venv "$VENV_DIR" 2>/dev/null
-      }
+      if ! uv venv --python 3.12 "$VENV_DIR" 2>/dev/null; then
+        _info "Python 3.12 not found — trying system Python"
+        uv venv "$VENV_DIR" 2>/dev/null || {
+          _warn "Failed to create Python venv"
+        }
+      fi
 
-      _info "Installing kokoro-mlx + deps (~200MB, one-time)..."
-      uv pip install --python "$VENV_DIR/bin/python" kokoro-mlx sounddevice pynput 2>/dev/null
-
-      _info "Installing spaCy English model (~14MB, one-time)..."
-      uv pip install --python "$VENV_DIR/bin/python" \
-        "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" \
-        2>/dev/null || "$VENV_DIR/bin/python" -m spacy download en_core_web_sm 2>/dev/null || true
-
-      _ok "MLX environment ready"
+      if [ -d "$VENV_DIR" ]; then
+        _info "Installing kokoro-mlx + deps (~200MB, one-time)..."
+        uv pip install --python "$VENV_DIR/bin/python" kokoro-mlx sounddevice pynput 2>/dev/null || {
+          _warn "kokoro-mlx installation may have failed — check logs"
+        }
+        _ok "MLX environment ready"
+      fi
     else
       _warn "uv not available — kokoro engine will fall back to say"
     fi
@@ -82,7 +99,7 @@ install() {
     else
       node -e "
         const fs = require('fs');
-        const cfg = JSON.parse(fs.readFileSync('$OC_JSON','utf-8'));
+        const cfg = JSON.parse(fs.readFileSync(process.argv[1], 'utf-8'));
         cfg.provider = cfg.provider || {};
         cfg.provider.openrouter = {
           npm: '@ai-sdk/openai-compatible',
@@ -90,8 +107,8 @@ install() {
           options: { baseURL: 'https://openrouter.ai/api/v1' },
           models: {}
         };
-        fs.writeFileSync('$OC_JSON', JSON.stringify(cfg, null, '\t') + '\n', 'utf-8');
-      " 2>/dev/null
+        fs.writeFileSync(process.argv[1], JSON.stringify(cfg, null, '\t') + '\n', 'utf-8');
+      " "$OC_JSON" 2>/dev/null || true
       _ok "OpenRouter provider configured (reads OPENROUTER_API_KEY from env)"
     fi
   fi
@@ -119,12 +136,17 @@ uninstall() {
     _info "Stopping TTS server..."
     curl -s -X POST "http://127.0.0.1:$PORT/stop" > /dev/null 2>&1 || true
     sleep 1
-    local pid=$(cat "$PID_FILE")
+    local pid
+    pid=$(cat "$PID_FILE")
     kill "$pid" 2>/dev/null || true
     rm -f "$PID_FILE"
   fi
 
+  # Remove plugin files (old loose .ts files + bundled .js)
   [ -f "$PLUGIN_DST" ] && rm "$PLUGIN_DST" && _ok "Removed: $PLUGIN_DST" || _info "Plugin not found"
+  # Clean up any leftover old-format .ts files
+  find "$PLUGINS_DIR" -maxdepth 1 -name "opentalk*.ts" -delete 2>/dev/null || true
+  rm -rf "$PLUGINS_DIR/tts-engines" 2>/dev/null || true
   [ -f "$AGENT_DST" ] && rm "$AGENT_DST" && _ok "Removed: $AGENT_DST" || _info "Agent not found"
   [ -f "$SERVER_DST" ] && rm "$SERVER_DST" && _ok "Removed: $SERVER_DST" || _info "Server not found"
   [ -f "$LOG_FILE" ] && rm "$LOG_FILE" && _ok "Removed: $LOG_FILE" || true
@@ -174,7 +196,8 @@ stop() {
   sleep 1
 
   if [ -f "$PID_FILE" ]; then
-    local pid=$(cat "$PID_FILE")
+    local pid
+    pid=$(cat "$PID_FILE")
     if kill -0 "$pid" 2>/dev/null; then
       kill "$pid" 2>/dev/null || true
       sleep 0.5
@@ -188,7 +211,8 @@ stop() {
 
 status() {
   if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-    local resp=$(curl -s "http://127.0.0.1:$PORT/status" 2>/dev/null || echo '{"error":"not responding"}')
+    local resp
+    resp=$(curl -s "http://127.0.0.1:$PORT/status" 2>/dev/null || echo '{"error":"not responding"}')
     echo "Server: running (PID $(cat "$PID_FILE"))"
     echo "$resp"
   else

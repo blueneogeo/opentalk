@@ -2,12 +2,31 @@
   "name": "opentalk",
   "version": "1.0.0",
   "description": "OpenCode plugin that speaks a short spoken summary when an agent finishes responding.",
+  "author": "",
+  "license": "MIT",
+  "private": true,
   "type": "module",
+  "engines": {
+    "bun": ">=1.0.0"
+  },
   "scripts": {
-    "install": "./build.sh install",
-    "uninstall": "./build.sh uninstall"
+    "setup": "./build.sh install",
+    "cleanup": "./build.sh uninstall",
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src/",
+    "format": "biome format --write src/",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@opencode-ai/plugin": "^1.17.16"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/bun": "latest",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
   }
 }

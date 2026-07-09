@@ -124,7 +124,7 @@ Used to get the assistant's final response when session goes idle.
   body: {
     messageID?: string
     model?: { providerID: string; modelID: string }
-    agent?: string                     // <-- "tts"
+    agent?: string                     // <-- "speak"
     noReply?: boolean                  // context-only, no AI response
     system?: string                    // system prompt override
     parts: Array<TextPartInput | FilePartInput | ...>
@@ -226,7 +226,7 @@ type Agent = {
 }
 ```
 
-Returns `Agent[]` from `client.app.agents()`. We use this to verify the "tts" agent exists at plugin startup.
+Returns `Agent[]` from `client.app.agents()`. We use this to verify the "speak" agent exists at plugin startup.
 
 ---
 
@@ -237,16 +237,16 @@ Agent markdown files live at:
 - Project: `{directory}/.opencode/agents/{name}.md`
 - Project (legacy): `{directory}/agents/{name}.md`
 
-### Parsing a `tts` property from agent frontmatter
+### Parsing a `speak` property from agent frontmatter
 
 ```typescript
 const content = await Bun.file(agentPath).text()
-const match = content.match(/^tts:\s*(.*)$/m)
+const match = content.match(/^speak:\s*(.*)$/m)
 if (match) return match[1].trim()
 return null
 ```
 
-Regex `/^tts:\s*(.*)$/m` — only matches `tts:` at start of line. Does NOT match indented or commented lines.
+Regex `/^speak:\s*(.*)$/m` — only matches `speak:` at start of line. Does NOT match indented or commented lines.
 
 **Tested and verified** against all agent files on this system.
 
@@ -303,8 +303,8 @@ proc.kill()  // stop speaking immediately
 // Track which agent is active for each session
 const sessionAgentMap = new Map<string, string>()
 
-// Cache of tts instructions per agent (read once on idle, cached)
-const ttsCache = new Map<string, string | null>()
+// Cache of speak directives per agent (read once on idle, cached)
+const speakDirectiveCache = new Map<string, SpeakDirective | null>()
 
 return {
   "chat.message": async (input, output) => {
@@ -321,13 +321,13 @@ return {
     const agentName = sessionAgentMap.get(sessionID)
     if (!agentName) return
 
-    // 1. Get tts instruction for this agent (with caching)
-    let tts = ttsCache.get(agentName)
-    if (tts === undefined) {
-      tts = getTtsFromAgentFile(agentName)
-      ttsCache.set(agentName, tts)
+    // 1. Get speak directive for this agent (with caching)
+    let directive = speakDirectiveCache.get(agentName)
+    if (directive === undefined) {
+      directive = getSpeakDirective(agentName)
+      speakDirectiveCache.set(agentName, directive)
     }
-    if (!tts) return
+    if (!directive) return
 
     // 2. Get the session's messages
     const msgs = await client.session.messages({ path: { id: sessionID } })
@@ -346,7 +346,7 @@ return {
     const ttsResponse = await client.session.prompt({
       path: { id: ttsSession.data.id },
       body: {
-        agent: "tts",
+        agent: "speak",
         parts: [
           { type: "text", text: `Instruction: ${tts}\n\nResponse to summarize:\n${responseText}` }
         ]
@@ -372,7 +372,7 @@ return {
 | Decision | Reason |
 |----------|--------|
 | Track agent via `chat.message` hook + Map | `session.idle` event doesn't carry agent info; `UserMessage.agent` does |
-| Cache `tts` instructions per agent | Don't read the file on every idle event |
+| Cache `speak` directives per agent | Don't read the file on every idle event |
 | Create a new TTS session per summary | Clean isolation; no stale context |
 | `Bun.spawn` for TTS (fire-and-forget) | Non-blocking, don't wait for speech to finish |
 | `client` comes from `PluginInput` | Plugin already has a connected client; no need to create a new one |
@@ -382,7 +382,7 @@ return {
 
 | Case | Handling |
 |------|----------|
-| Agent has no `tts` property | Skip silently |
+| Agent has no `speak` property | Skip silently |
 | Agent file doesn't exist | Return null, cache, skip |
 | TTS agent doesn't exist | Log warning at startup, skip all TTS |
 | `say` command fails | Fire-and-forget, no crash |

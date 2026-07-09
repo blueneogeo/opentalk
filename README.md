@@ -8,7 +8,7 @@ OpenCode agent responses can be long. Having the full answer read aloud via TTS 
 
 ## The Solution
 
-OpenTalk lets you define a **per-agent spoken summary instruction**. After an agent finishes its work, a dedicated **speak agent** receives that instruction plus the full response, generates a short conversational summary, and pipes it through macOS `say`. The summary is also injected back into the conversation as a visible message so you can read it. Now you hear *"I just added a dark mode toggle"* — and only need to look at the screen if the summary isn't what you expected.
+OpenTalk lets you define a **per-agent spoken summary instruction**. After an agent finishes its work, a dedicated **speak agent** receives that instruction plus the full response, generates a short conversational summary, and pipes it through your chosen TTS engine (macOS `say`, local Kokoro MLX, or OpenRouter API). The summary is also injected back into the conversation as a visible message so you can read it. Now you hear *"I just added a dark mode toggle"* — and only need to look at the screen if the summary isn't what you expected.
 
 ## High-Level Flow
 
@@ -52,18 +52,19 @@ OpenTalk lets you define a **per-agent spoken summary instruction**. After an ag
         │   mode toggle."     │
         └──────────┬──────────┘
                    │
-         ┌─────────┴─────────┐
-         │                   │
-         ▼                   ▼
-  ┌──────────────┐   ┌──────────────┐
-  │  macOS say   │   │  🔊 injected │
-  │  "Samantha"  │   │   back into  │
-  └──────┬───────┘   │ conversation │
-         │           └──────────────┘
-         ▼
-  🔊 "I just added
-      a dark mode
-      toggle."
+          ┌─────────┴─────────┐
+          │                   │
+          ▼                   ▼
+   ┌──────────────┐   ┌──────────────┐
+   │  TTS engine  │   │  🔊 injected │
+   │ (say/kokoro/ │   │   back into  │
+   │  openrouter) │   │ conversation │
+   └──────┬───────┘   └──────────────┘
+          │
+          ▼
+   🔊 "I just added
+       a dark mode
+       toggle."
 ```
 
 ## How It Works
@@ -93,18 +94,20 @@ OpenTalk lets you define a **per-agent spoken summary instruction**. After an ag
 | **Summary visible in conversation** | User can read it too, not just hear it. |
 | **Loop guard** | Speak agent won't trigger itself (agent name check). |
 | **Session cleanup** | Speak agent session deleted immediately after use. |
-| **No server, no PID management** | Plugin hooks directly into OpenCode's event system. |
+| **Local Kokoro server** | Kokoro engine requires a local Python HTTP server (`build.sh start/stop/status`). `say` and OpenRouter engines need no server. |
 
 ## Installation
 
 ```bash
 cd opentalk
+npm install    # install dependencies (esbuild, typescript, etc.)
 ./build.sh install
 ```
 
-This copies:
-- `src/opentalk.ts` → `~/.config/opencode/plugins/opentalk.ts`
-- `agents/speak.md` → `~/.config/opencode/agents/speak.md` (only if not already present — preserves user overrides)
+This builds the plugin into a single bundled file and copies:
+- `dist/opentalk.js` → `~/.config/opencode/plugins/opentalk.ts`
+- `agents/speak.md` → `~/.config/opencode/agents/speak.md` (preserves user overrides)
+- `src/kokoro-server.py` → `~/.opentalk/kokoro-server.py`
 
 Then restart OpenCode.
 
@@ -152,7 +155,7 @@ speak: true
 
 ## Speak Agent Configuration
 
-The speak agent (`~/.config/opencode/agents/speak.md`) defines both the summarization behavior AND the TTS engine via its YAML frontmatter. Here's the full breakdown:
+The speak agent (`~/.config/opencode/agents/speak.md`) defines both the summarization behavior AND the TTS engine via its YAML frontmatter.
 
 ### TTS Engine Settings (`tts:` block)
 
@@ -268,11 +271,30 @@ Project-level overrides are also supported: place a `speak.md` in `.opencode/age
 
 ```
 opentalk/
-├── src/opentalk.ts       # The plugin
-├── agents/speak.md        # Speak agent definition
-├── build.sh               # Install / uninstall
-├── package.json           # @opencode-ai/plugin dependency
+├── src/
+│   ├── opentalk.ts              # Plugin entry point (hooks)
+│   ├── types.ts                 # Shared type definitions
+│   ├── logger.ts                # Debug logging utility
+│   ├── response-suppression.ts  # Error suppression workaround
+│   ├── config.ts                # TTS config loading & parsing
+│   ├── directive.ts             # Speak directive resolution
+│   ├── session.ts               # Session utilities
+│   ├── tts-engines/
+│   │   ├── types.ts             # TTS engine interface
+│   │   ├── say.ts               # macOS say engine
+│   │   ├── openrouter.ts        # OpenRouter API engine
+│   │   ├── kokoro.ts            # Local Kokoro engine
+│   │   └── registry.ts          # Engine registry & dispatcher
+│   └── kokoro-server.py         # Local Kokoro TTS server
+├── agents/speak.md              # Speak agent definition
+├── tests/                       # Unit tests (26 passing)
+├── build.mjs                  # esbuild bundler (→ single deployable file)
+├── build.sh                   # Install / uninstall / start / stop / status
+├── package.json
+├── package-lock.json
 ├── tsconfig.json
-├── BUILDING_BLOCKS.md     # Type reference & verified building blocks
+├── biome.json                   # Lint & format config
+├── vitest.config.ts             # Test runner config
+├── BUILDING_BLOCKS.md           # Type reference & verified building blocks
 └── README.md
 ```
