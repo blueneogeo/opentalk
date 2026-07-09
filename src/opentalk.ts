@@ -2,7 +2,6 @@ import type { Plugin } from "@opencode-ai/plugin"
 import { join } from "node:path"
 import { homedir, tmpdir } from "node:os"
 import { readFileSync, existsSync, writeFileSync } from "node:fs"
-import { parse as parseYaml } from "yaml"
 
 // ── Types ──
 
@@ -16,9 +15,31 @@ interface TtsConfig {
   baseUrl?: string
 }
 
+// ── Inline YAML parser for the tts block (avoids external dependency) ──
+
+function parseTtsBlock(frontmatter: string): Record<string, string> | null {
+  const lines = frontmatter.split("\n")
+  let inTts = false
+  const result: Record<string, string> = {}
+
+  for (const line of lines) {
+    if (line.trimStart().startsWith("tts:")) { inTts = true; continue }
+    if (!inTts) continue
+    // Exit tts block when we hit a non-indented, non-empty, non-comment line
+    if (line.length > 0 && line[0] !== " " && line[0] !== "\t" && line[0] !== "#") break
+    const trimmed = line.trim()
+    if (trimmed === "" || trimmed.startsWith("#")) continue
+    const m = trimmed.match(/^([\w_]+):\s*(.*)$/)
+    if (m) result[m[1]] = m[2]
+  }
+
+  return Object.keys(result).length > 0 ? result : null
+}
+
 // ── Plugin ──
 
 export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
+  try {
 
   const AGENT_NAME = "speak"
 
@@ -27,13 +48,17 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
   const sessionAgent = new Map<string, string>()
   const speakCache = new Map<string, string | null>()
 
+  // ── Lazy-loaded TTS config (never blocks startup) ──
+  let _ttsConfig: TtsConfig | null = null
+  let _ttsLoading = false
+
   // ── Resolve ${VAR_NAME} from environment ──
   const resolveEnv = (value: string): string => {
     const m = value.match(/^\$\{(.+)\}$/)
     return m ? (process.env[m[1]] ?? "") : value
   }
 
-  // ── Load TTS config from speak.md frontmatter ──
+  // ── Load TTS config from speak.md frontmatter (called lazily) ──
   const loadTtsConfig = async (): Promise<TtsConfig> => {
     const defaultConfig: TtsConfig = {
       engine: "say",
@@ -49,33 +74,30 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
       join(homedir(), ".config", "opencode", "agents", "speak.md"),
     ]
 
-    let ttsBlock: any = null
-
+    // Phase 1: read the file (sync, no network)
+    let ttsBlock: Record<string, string> | null = null
     for (const p of paths) {
       try {
         if (!existsSync(p)) continue
         const content = readFileSync(p, "utf-8")
         const fmMatch = content.match(/^---\n([\s\S]*?)\n---/)
         if (!fmMatch) continue
-        const fm = parseYaml(fmMatch[1]) as any
-        if (fm?.tts) {
-          ttsBlock = fm.tts
-          break
-        }
+        const block = parseTtsBlock(fmMatch[1])
+        if (block) { ttsBlock = block; break }
       } catch { /* try next path */ }
     }
 
     if (!ttsBlock) return defaultConfig
 
     const config: TtsConfig = {
-      engine: ttsBlock.engine ?? "say",
+      engine: (ttsBlock.engine as TtsConfig["engine"]) ?? defaultConfig.engine,
       model: ttsBlock.model ?? defaultConfig.model,
       voice: ttsBlock.voice ?? defaultConfig.voice,
-      speed: ttsBlock.speed ?? defaultConfig.speed,
-      responseFormat: ttsBlock.response_format ?? defaultConfig.responseFormat,
+      speed: Number(ttsBlock.speed) || defaultConfig.speed,
+      responseFormat: (ttsBlock.response_format as TtsConfig["responseFormat"]) ?? defaultConfig.responseFormat,
     }
 
-    // Resolve provider credentials
+    // Phase 2: resolve provider credentials (may involve network)
     if (ttsBlock.api_provider) {
       try {
         const providers = await client.config.providers()
@@ -86,7 +108,6 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
           : null
         if (provider) {
           config.baseUrl = provider.options?.baseURL
-          // Provider key might be resolved from env or set directly
           if (provider.key) config.apiKey = provider.key
         }
       } catch { /* provider resolution failed */ }
@@ -94,17 +115,14 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
 
     // Fallback: direct api_key / base_url in speak.md
     if (!config.apiKey && ttsBlock.api_key) {
-      config.apiKey = resolveEnv(String(ttsBlock.api_key))
+      config.apiKey = resolveEnv(ttsBlock.api_key)
     }
     if (!config.baseUrl && ttsBlock.base_url) {
-      config.baseUrl = String(ttsBlock.base_url)
+      config.baseUrl = ttsBlock.base_url
     }
 
-    // Fallback: try well-known env vars for the provider
-    if (!config.apiKey && config.baseUrl?.includes("openrouter.ai")) {
-      config.apiKey = process.env.OPENROUTER_API_KEY
-    }
-    if (!config.apiKey && config.engine !== "say") {
+    // Fallback: try well-known env vars
+    if (!config.apiKey) {
       config.apiKey = process.env.OPENROUTER_API_KEY
     }
 
@@ -116,7 +134,26 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
     return config
   }
 
-  const ttsConfig = await loadTtsConfig()
+  // ── Get or load TTS config (never blocks if already loaded) ──
+  const getTtsConfig = async (): Promise<TtsConfig> => {
+    if (_ttsConfig) return _ttsConfig
+
+    if (_ttsLoading) {
+      // Wait for in-flight load to complete
+      while (!_ttsConfig) {
+        await new Promise(r => setTimeout(r, 50))
+      }
+      return _ttsConfig
+    }
+
+    _ttsLoading = true
+    try {
+      _ttsConfig = await loadTtsConfig()
+    } catch {
+      _ttsConfig = { engine: "say", model: "", voice: "", speed: 1.0, responseFormat: "mp3" }
+    }
+    return _ttsConfig
+  }
 
   // ── Read speak instruction from agent .md files ──
   const getSpeakInstruction = (agentName: string): string | null => {
@@ -167,8 +204,8 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
     Bun.spawn(["say", "-v", "Samantha", "-r", "200", text])
   }
 
-  const speakOpenRouter = async (text: string): Promise<void> => {
-    const { apiKey, baseUrl, model, voice, speed, responseFormat } = ttsConfig
+  const speakOpenRouter = async (cfg: TtsConfig, text: string): Promise<void> => {
+    const { apiKey, baseUrl, model, voice, speed, responseFormat } = cfg
     const url = `${baseUrl ?? "https://openrouter.ai/api/v1"}/audio/speech`
 
     const res = await fetch(url, {
@@ -197,8 +234,9 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
   const doSpeak = async (text: string): Promise<void> => {
     if (!text.trim()) return
     try {
-      if (ttsConfig.engine === "openrouter" && ttsConfig.apiKey) {
-        await speakOpenRouter(text)
+      const cfg = await getTtsConfig()
+      if (cfg.engine === "openrouter" && cfg.apiKey) {
+        await speakOpenRouter(cfg, text)
       } else {
         speakSay(text)
       }
@@ -307,5 +345,11 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
         try { await client.session.delete({ path: { id: ttsSession.data.id } }) } catch {}
       } catch { /* fail silently */ }
     },
+  }
+
+  } catch {
+    // If ANYTHING in setup fails, return empty hooks.
+    // OpenCode continues working; the plugin is simply disabled.
+    return {}
   }
 }
