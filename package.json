@@ -8,6 +8,7 @@
     "uninstall": "./build.sh uninstall"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "^1.17.16"
+    "@opencode-ai/plugin": "^1.17.16",
+    "kokoro-js": "^1.2.1"
   }
 }

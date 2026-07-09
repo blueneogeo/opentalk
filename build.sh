@@ -35,7 +35,25 @@ install() {
     _info "  (skipped to preserve your custom version)"
   fi
 
-  # ── Auto-configure OpenRouter provider ──
+  # ── Install plugin dependencies ──
+  local CFG_PKG="$HOME/.config/opencode/package.json"
+  local SRC_PKG="$(dirname "$0")/package.json"
+  if [ -f "$SRC_PKG" ] && [ -f "$CFG_PKG" ]; then
+    node -e "
+      const fs = require('fs');
+      const cfg = JSON.parse(fs.readFileSync('$CFG_PKG','utf-8'));
+      const src = JSON.parse(fs.readFileSync('$SRC_PKG','utf-8'));
+      cfg.dependencies = cfg.dependencies || {};
+      let changed = false;
+      for (const [k, v] of Object.entries(src.dependencies || {})) {
+        if (k === '@opencode-ai/plugin') continue; // already present
+        if (!cfg.dependencies[k]) { cfg.dependencies[k] = v; changed = true; }
+      }
+      if (changed) fs.writeFileSync('$CFG_PKG', JSON.stringify(cfg, null, 2) + '\n', 'utf-8');
+    " 2>/dev/null
+    cd "$HOME/.config/opencode" && ~/.bun/bin/bun install --silent 2>/dev/null || true
+    _ok "Dependencies installed"
+  fi
   local OC_JSON="$HOME/.config/opencode/opencode.json"
 
   if [ -n "${OPENROUTER_API_KEY:-}" ]; then
@@ -68,7 +86,8 @@ install() {
 
   echo ""
   echo "OpenTalk installed."
-  echo "Add 'speak: \"summarize what you just did in one sentence\"' to any agent .md file."
+  echo "TTS engines: say (macOS) | kokoro (local, free) | openrouter (API)"
+  echo "Add 'speak: true' or 'speak: \"summarize in one sentence\"' to any agent .md file."
   echo "Commands: /toggle-speak  |  /speak <text>"
   echo "Then restart OpenCode."
 }

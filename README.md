@@ -160,7 +160,7 @@ If the `tts:` block is absent, the plugin falls back to macOS `say`. Each field 
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `engine` | No | `say` | `say` (macOS built-in) or `openrouter` (OpenAI-compatible API) |
+| `engine` | No | `say` | `say` (macOS built-in), `kokoro` (local ONNX, free), or `openrouter` (OpenAI-compatible API) |
 | `model` | No | `hexgrad/kokoro-82m` | OpenRouter TTS model slug. See [available models](https://openrouter.ai/collections/text-to-speech-models) |
 | `voice` | No | `af_bella` | Voice identifier — model-specific. See voices section below |
 | `speed` | No | `1.0` | Playback speed (0.25–4.0). Only OpenAI models support this; Kokoro ignores it |
@@ -202,13 +202,23 @@ If using an OpenAI model instead: `alloy`, `echo`, `fable`, `onyx`, `nova`, `shi
 
 ### Configuration Examples
 
-**macOS built-in speech only (no API key needed):**
+**macOS built-in speech only (no API key needed, lowest quality):**
 ```yaml
 ---
 tts:
   engine: say
 ---
 ```
+
+**Local Kokoro (free, high quality, no internet needed):**
+```yaml
+---
+tts:
+  engine: kokoro
+  voice: af_bella
+---
+```
+First run downloads the 86MB ONNX model. Subsequent calls are instant.
 
 **OpenRouter with provider reference:**
 ```yaml

@@ -3,10 +3,26 @@ import { join } from "node:path"
 import { homedir, tmpdir } from "node:os"
 import { readFileSync, existsSync, writeFileSync } from "node:fs"
 
+// Lazy import — kokoro-js may fail on older Bun versions (missing DecompressionStream)
+let _KokoroTTS: any = null
+let _kokoroAvailable = true
+async function ensureKokoroTTS(): Promise<any> {
+  if (_KokoroTTS) return _KokoroTTS
+  if (!_kokoroAvailable) return null
+  try {
+    const mod = await import("kokoro-js")
+    _KokoroTTS = mod.KokoroTTS
+    return _KokoroTTS
+  } catch {
+    _kokoroAvailable = false
+    return null
+  }
+}
+
 // ── Types ──
 
 interface TtsConfig {
-  engine: "say" | "openrouter"
+  engine: "say" | "openrouter" | "kokoro"
   model: string
   voice: string
   speed: number
@@ -243,16 +259,56 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
     Bun.spawn(["afplay", tmp])
   }
 
+  // ── Local Kokoro TTS (kokoro-js, ONNX runtime) ──
+
+  let _kokoroModel: any = null
+  let _kokoroLoading = false
+
+  const getKokoroModel = async (): Promise<any> => {
+    if (_kokoroModel) return _kokoroModel
+    if (_kokoroLoading) {
+      while (!_kokoroModel) await new Promise(r => setTimeout(r, 200))
+      return _kokoroModel
+    }
+    _kokoroLoading = true
+    try {
+      const KokoroTTS = await ensureKokoroTTS()
+      if (!KokoroTTS) throw new Error("kokoro-js not available")
+      _kokoroModel = await KokoroTTS.from_pretrained(
+        "onnx-community/Kokoro-82M-v1.0-ONNX",
+        { dtype: "q8", device: "cpu" }
+      )
+    } catch {
+      _kokoroModel = null
+      _kokoroLoading = false
+      throw new Error("Failed to load kokoro model")
+    }
+    return _kokoroModel
+  }
+
+  const speakKokoro = async (text: string, voice: string): Promise<void> => {
+    const model = await getKokoroModel()
+    const audio = await model.generate(text, { voice })
+    const tmp = join(tmpdir(), `opentalk-${Date.now()}.wav`)
+    await audio.save(tmp)
+    Bun.spawn(["afplay", tmp])
+  }
+
   const doSpeak = async (text: string): Promise<void> => {
     if (!text.trim()) return
+    const cfg = await getTtsConfig()
     try {
-      const cfg = await getTtsConfig()
-      if (cfg.engine === "openrouter" && cfg.apiKey) {
+      if (cfg.engine === "kokoro") {
+        await speakKokoro(text, cfg.voice)
+      } else if (cfg.engine === "openrouter" && cfg.apiKey) {
         await speakOpenRouter(cfg, text)
       } else {
         speakSay(text)
       }
-    } catch { /* fail silently */ }
+    } catch {
+      // On failure, fall back to say (unless we're already on say)
+      if (cfg.engine !== "say") speakSay(text)
+    }
   }
 
   // ── Helper: inject visible message into session ──
