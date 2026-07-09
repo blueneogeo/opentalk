@@ -265,10 +265,12 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
       input.command["speak"] = {
         description: "Speak text aloud using OpenTalk TTS",
         template: "$ARGUMENTS",
+        subtask: true,
       }
       input.command["toggle-speak"] = {
         description: "Toggle spoken summaries on or off",
         template: "",
+        subtask: true,
       }
     },
 
