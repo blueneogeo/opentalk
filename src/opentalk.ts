@@ -259,24 +259,13 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
   // ── Hooks ──
 
   return {
-    // Register /speak and /toggle-speak commands
-    config: async (input: any) => {
-      input.command ??= {}
-      input.command["speak"] = {
-        description: "Speak text aloud using OpenTalk TTS",
-        template: "$ARGUMENTS",
-        subtask: true,
-      }
-      input.command["toggle-speak"] = {
-        description: "Toggle spoken summaries on or off",
-        template: "",
-        subtask: true,
-      }
-    },
+    // Track agent + intercept /speak and /toggle-speak
+    "chat.message": async (input, output) => {
+      // Check for built-in commands in the message text
+      const textParts = output.parts.filter((p: any) => p.type === "text")
+      const fullText = textParts.map((p: any) => p.text).join(" ")
 
-    // Intercept commands
-    "command.execute.before": async (input, output) => {
-      if (input.command === "toggle-speak") {
+      if (fullText.startsWith("/toggle-speak")) {
         speakEnabled = !speakEnabled
         output.parts = [{
           type: "text",
@@ -284,21 +273,20 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
         } as any]
         return
       }
-      if (input.command === "speak") {
-        const text = input.arguments?.trim()
-        if (text) {
-          await doSpeak(text)
-          const preview = text.length > 80 ? text.slice(0, 77) + "..." : text
+
+      if (fullText.startsWith("/speak ")) {
+        const speakText = fullText.slice("/speak ".length).trim()
+        if (speakText) {
+          await doSpeak(speakText)
+          const preview = speakText.length > 80 ? speakText.slice(0, 77) + "..." : speakText
           output.parts = [{ type: "text", text: `🔊 Spoke: "${preview}"` } as any]
         } else {
           output.parts = [{ type: "text", text: "Usage: /speak <text to speak>" } as any]
         }
         return
       }
-    },
 
-    // Track which agent handles each session
-    "chat.message": async (input) => {
+      // Normal message — track agent for session.idle handler
       if (input.agent) {
         sessionAgent.set(input.sessionID, input.agent)
       }
