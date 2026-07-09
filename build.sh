@@ -52,6 +52,8 @@ install() {
       if (changed) fs.writeFileSync('$CFG_PKG', JSON.stringify(cfg, null, 2) + '\n', 'utf-8');
     " 2>/dev/null
     cd "$HOME/.config/opencode" && ~/.bun/bin/bun install --silent 2>/dev/null || true
+    # Re-install with npm for native addon support (kokoro-js needs onnxruntime)
+    cd "$HOME/.config/opencode" && npm install --silent --omit=dev 2>/dev/null || true
     _ok "Dependencies installed"
   fi
   local OC_JSON="$HOME/.config/opencode/opencode.json"

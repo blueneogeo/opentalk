@@ -117,38 +117,40 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
       responseFormat: (ttsBlock.response_format as TtsConfig["responseFormat"]) ?? defaultConfig.responseFormat,
     }
 
-    // Phase 2: resolve provider credentials (may involve network)
-    if (ttsBlock.api_provider) {
-      try {
-        const providers = await client.config.providers()
-        const data = (providers as any).data ?? providers
-        const list = data.providers ?? data ?? []
-        const provider = Array.isArray(list)
-          ? list.find((p: any) => p.id === ttsBlock.api_provider)
-          : null
-        if (provider) {
-          config.baseUrl = provider.options?.baseURL
-          if (provider.key) config.apiKey = provider.key
-        }
-      } catch { /* provider resolution failed */ }
-    }
+    // Phase 2: resolve provider credentials (only needed for openrouter engine)
+    if (config.engine === "openrouter") {
+      if (ttsBlock.api_provider) {
+        try {
+          const providers = await client.config.providers()
+          const data = (providers as any).data ?? providers
+          const list = data.providers ?? data ?? []
+          const provider = Array.isArray(list)
+            ? list.find((p: any) => p.id === ttsBlock.api_provider)
+            : null
+          if (provider) {
+            config.baseUrl = provider.options?.baseURL
+            if (provider.key) config.apiKey = provider.key
+          }
+        } catch { /* provider resolution failed */ }
+      }
 
-    // Fallback: direct api_key / base_url in speak.md
-    if (!config.apiKey && ttsBlock.api_key) {
-      config.apiKey = resolveEnv(ttsBlock.api_key)
-    }
-    if (!config.baseUrl && ttsBlock.base_url) {
-      config.baseUrl = ttsBlock.base_url
-    }
+      // Fallback: direct api_key / base_url in speak.md
+      if (!config.apiKey && ttsBlock.api_key) {
+        config.apiKey = resolveEnv(ttsBlock.api_key)
+      }
+      if (!config.baseUrl && ttsBlock.base_url) {
+        config.baseUrl = ttsBlock.base_url
+      }
 
-    // Fallback: try well-known env vars
-    if (!config.apiKey) {
-      config.apiKey = process.env.OPENROUTER_API_KEY
-    }
+      // Fallback: try well-known env vars
+      if (!config.apiKey) {
+        config.apiKey = process.env.OPENROUTER_API_KEY
+      }
 
-    // If no API key resolved, fall back to say
-    if (config.engine !== "say" && !config.apiKey) {
-      config.engine = "say"
+      // If no API key resolved for openrouter, fall back to say
+      if (!config.apiKey) {
+        config.engine = "say"
+      }
     }
 
     return config
@@ -306,7 +308,6 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
         speakSay(text)
       }
     } catch {
-      // On failure, fall back to say (unless we're already on say)
       if (cfg.engine !== "say") speakSay(text)
     }
   }
