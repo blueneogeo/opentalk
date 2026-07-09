@@ -3,22 +3,6 @@ import { join } from "node:path"
 import { homedir, tmpdir } from "node:os"
 import { readFileSync, existsSync, writeFileSync } from "node:fs"
 
-// Lazy import — kokoro-js may fail on older Bun versions (missing DecompressionStream)
-let _KokoroTTS: any = null
-let _kokoroAvailable = true
-async function ensureKokoroTTS(): Promise<any> {
-  if (_KokoroTTS) return _KokoroTTS
-  if (!_kokoroAvailable) return null
-  try {
-    const mod = await import("kokoro-js")
-    _KokoroTTS = mod.KokoroTTS
-    return _KokoroTTS
-  } catch {
-    _kokoroAvailable = false
-    return null
-  }
-}
-
 // ── Types ──
 
 interface TtsConfig {
@@ -32,10 +16,8 @@ interface TtsConfig {
 }
 
 type SpeakDirective =
-  | { type: "instruction"; value: string }   // summarize via speak agent
-  | { type: "full" }                          // speak the response raw
-
-// ── Inline YAML parser for the tts block (avoids external dependency) ──
+  | { type: "instruction"; value: string }
+  | { type: "full" }
 
 function parseTtsBlock(frontmatter: string): Record<string, string> | null {
   const lines = frontmatter.split("\n")
@@ -45,7 +27,6 @@ function parseTtsBlock(frontmatter: string): Record<string, string> | null {
   for (const line of lines) {
     if (line.trimStart().startsWith("tts:")) { inTts = true; continue }
     if (!inTts) continue
-    // Exit tts block when we hit a non-indented, non-empty, non-comment line
     if (line.length > 0 && line[0] !== " " && line[0] !== "\t" && line[0] !== "#") break
     const trimmed = line.trim()
     if (trimmed === "" || trimmed.startsWith("#")) continue
@@ -59,29 +40,66 @@ function parseTtsBlock(frontmatter: string): Record<string, string> | null {
 // ── Plugin ──
 
 export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
+  const _log = (...args: any[]) => {
+    try { require("fs").appendFileSync(join(homedir(), ".opentalk", "plugin.log"), `[${new Date().toISOString()}] ${args.map(String).join(" ")}\n`) } catch {}
+  }
+  _log("Plugin loaded")
+
+  let speakSuppress = false
+
+  const OriginalResponse = globalThis.Response
+  globalThis.Response = function (this: any, body?: any, init?: any) {
+    if (speakSuppress) {
+      let bodyStr = ""
+      try {
+        if (typeof body === "string") {
+          bodyStr = body
+        } else if (body && typeof body === "object") {
+          // Object with numeric keys (0,1,2...) = char codes from Bun's Response
+          const keys = Object.keys(body)
+          if (keys.length > 2 && keys.every((k, i) => String(i) === k && typeof body[k] === "number")) {
+            bodyStr = String.fromCharCode(...(Object.values(body) as number[]))
+          } else {
+            bodyStr = JSON.stringify(body)
+          }
+        } else {
+          bodyStr = String(body ?? "")
+        }
+      } catch (e) { bodyStr = "[err:" + String(e) + "]" }
+      _log("RESP", (init as any)?.status ?? "?", "len=" + bodyStr.length, bodyStr.slice(0, 300))
+      if ((init as any)?.status >= 400 && (bodyStr.includes("Failed to send prompt") || bodyStr.includes("Unexpected server error"))) {
+        _log("SUPPRESSED")
+        return new OriginalResponse(JSON.stringify({ ok: true }), { ...(init ?? {}), status: 200 })
+      }
+    }
+    return new OriginalResponse(body, init)
+  } as any
+  Object.defineProperty(globalThis.Response, "prototype", { value: OriginalResponse.prototype })
+
+  const _consoleError = console.error
+  const _stdoutWrite = process.stdout.write.bind(process.stdout)
+  const _stderrWrite = process.stderr.write.bind(process.stderr)
+  const _fetch = globalThis.fetch
+
   try {
 
-  const AGENT_NAME = "speak"
+  const AGENT_NAME = "opentalk-tts"
 
-  // ── Global state ──
-  let speakEnabled = true                     // /toggle-speak flips this
+  let speakEnabled = true
   const sessionAgent = new Map<string, string>()
   const speakDirectiveCache = new Map<string, SpeakDirective | null>()
 
-  // ── Lazy-loaded TTS config (never blocks startup) ──
   let _ttsConfig: TtsConfig | null = null
   let _ttsLoading = false
 
-  // ── Resolve ${VAR_NAME} from environment ──
   const resolveEnv = (value: string): string => {
     const m = value.match(/^\$\{(.+)\}$/)
     return m ? (process.env[m[1]] ?? "") : value
   }
 
-  // ── Load TTS config from speak.md frontmatter (called lazily) ──
   const loadTtsConfig = async (): Promise<TtsConfig> => {
     const defaultConfig: TtsConfig = {
-      engine: "say",
+      engine: "kokoro",
       model: "hexgrad/kokoro-82m",
       voice: "af_bella",
       speed: 1.0,
@@ -94,7 +112,6 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
       join(homedir(), ".config", "opencode", "agents", "speak.md"),
     ]
 
-    // Phase 1: read the file (sync, no network)
     let ttsBlock: Record<string, string> | null = null
     for (const p of paths) {
       try {
@@ -104,7 +121,7 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
         if (!fmMatch) continue
         const block = parseTtsBlock(fmMatch[1])
         if (block) { ttsBlock = block; break }
-      } catch { /* try next path */ }
+      } catch (err) { console.warn("[OpenTalk] failed to read config from", p, err) }
     }
 
     if (!ttsBlock) return defaultConfig
@@ -117,7 +134,6 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
       responseFormat: (ttsBlock.response_format as TtsConfig["responseFormat"]) ?? defaultConfig.responseFormat,
     }
 
-    // Phase 2: resolve provider credentials (only needed for openrouter engine)
     if (config.engine === "openrouter") {
       if (ttsBlock.api_provider) {
         try {
@@ -131,10 +147,9 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
             config.baseUrl = provider.options?.baseURL
             if (provider.key) config.apiKey = provider.key
           }
-        } catch { /* provider resolution failed */ }
+        } catch (err) { console.warn("[OpenTalk] provider resolution failed:", err) }
       }
 
-      // Fallback: direct api_key / base_url in speak.md
       if (!config.apiKey && ttsBlock.api_key) {
         config.apiKey = resolveEnv(ttsBlock.api_key)
       }
@@ -142,12 +157,10 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
         config.baseUrl = ttsBlock.base_url
       }
 
-      // Fallback: try well-known env vars
       if (!config.apiKey) {
         config.apiKey = process.env.OPENROUTER_API_KEY
       }
 
-      // If no API key resolved for openrouter, fall back to say
       if (!config.apiKey) {
         config.engine = "say"
       }
@@ -156,12 +169,10 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
     return config
   }
 
-  // ── Get or load TTS config (never blocks if already loaded) ──
   const getTtsConfig = async (): Promise<TtsConfig> => {
     if (_ttsConfig) return _ttsConfig
 
     if (_ttsLoading) {
-      // Wait for in-flight load to complete
       while (!_ttsConfig) {
         await new Promise(r => setTimeout(r, 50))
       }
@@ -171,13 +182,13 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
     _ttsLoading = true
     try {
       _ttsConfig = await loadTtsConfig()
-    } catch {
+    } catch (err) {
+      console.warn("[OpenTalk] loading TTS config failed, falling back to say:", err)
       _ttsConfig = { engine: "say", model: "", voice: "", speed: 1.0, responseFormat: "mp3" }
     }
     return _ttsConfig
   }
 
-  // ── Read speak directive from agent .md files ──
   const getSpeakDirective = (agentName: string): SpeakDirective | null => {
     const cached = speakDirectiveCache.get(agentName)
     if (cached !== undefined) return cached
@@ -204,14 +215,13 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
             : { type: "instruction", value }
         speakDirectiveCache.set(agentName, directive)
         return directive
-      } catch { /* try next */ }
+      } catch (err) { console.warn("[OpenTalk] failed to read directive from", p, err) }
     }
 
     speakDirectiveCache.set(agentName, null)
     return null
   }
 
-  // ── Extract assistant text from session ──
   const extractResponseText = async (sessionID: string): Promise<string | null> => {
     try {
       const msgs = await client.session.messages({ path: { id: sessionID } })
@@ -225,13 +235,15 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
         .map((p: any) => p.text)
         .join("\n").trim()
       return text || null
-    } catch { return null }
+    } catch (err) { console.error("[OpenTalk] extractResponseText failed:", err); return null }
   }
 
-  // ── TTS engines ──
+  const KOKORO_URL = "http://127.0.0.1:8765"
 
   const speakSay = (text: string): void => {
-    Bun.spawn(["say", "-v", "Samantha", "-r", "200", text])
+    try {
+      Bun.spawn(["say", "-v", "Samantha", "-r", "200", text])
+    } catch (err) { console.error("[OpenTalk] say command failed:", err) }
   }
 
   const speakOpenRouter = async (cfg: TtsConfig, text: string): Promise<void> => {
@@ -261,58 +273,27 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
     Bun.spawn(["afplay", tmp])
   }
 
-  // ── Local Kokoro TTS (kokoro-js, ONNX runtime) ──
-
-  let _kokoroModel: any = null
-  let _kokoroLoading = false
-
-  const getKokoroModel = async (): Promise<any> => {
-    if (_kokoroModel) return _kokoroModel
-    if (_kokoroLoading) {
-      while (!_kokoroModel) await new Promise(r => setTimeout(r, 200))
-      return _kokoroModel
-    }
-    _kokoroLoading = true
-    try {
-      const KokoroTTS = await ensureKokoroTTS()
-      if (!KokoroTTS) throw new Error("kokoro-js not available")
-      _kokoroModel = await KokoroTTS.from_pretrained(
-        "onnx-community/Kokoro-82M-v1.0-ONNX",
-        { dtype: "q8", device: "cpu" }
-      )
-    } catch {
-      _kokoroModel = null
-      _kokoroLoading = false
-      throw new Error("Failed to load kokoro model")
-    }
-    return _kokoroModel
-  }
-
   const speakKokoro = async (text: string, voice: string): Promise<void> => {
-    const model = await getKokoroModel()
-    const audio = await model.generate(text, { voice })
-    const tmp = join(tmpdir(), `opentalk-${Date.now()}.wav`)
-    await audio.save(tmp)
-    Bun.spawn(["afplay", tmp])
+    const res = await fetch(`${KOKORO_URL}/speak`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, voice }),
+    })
+    if (!res.ok) throw new Error(`Kokoro server returned ${res.status}`)
   }
 
   const doSpeak = async (text: string): Promise<void> => {
     if (!text.trim()) return
     const cfg = await getTtsConfig()
-    try {
-      if (cfg.engine === "kokoro") {
-        await speakKokoro(text, cfg.voice)
-      } else if (cfg.engine === "openrouter" && cfg.apiKey) {
-        await speakOpenRouter(cfg, text)
-      } else {
-        speakSay(text)
-      }
-    } catch {
-      if (cfg.engine !== "say") speakSay(text)
+    if (cfg.engine === "kokoro") {
+      await speakKokoro(text, cfg.voice)
+    } else if (cfg.engine === "openrouter" && cfg.apiKey) {
+      await speakOpenRouter(cfg, text)
+    } else {
+      speakSay(text)
     }
   }
 
-  // ── Helper: inject visible message into session ──
   const injectMessage = async (sessionID: string, text: string): Promise<void> => {
     try {
       await client.session.prompt({
@@ -322,46 +303,47 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
           parts: [{ type: "text" as const, text }],
         },
       })
-    } catch { /* best effort */ }
+    } catch (err) { console.error("[OpenTalk] injectMessage failed:", err) }
   }
 
-  // ── Hooks ──
-
   return {
-    // Track agent + intercept /speak and /toggle-speak
+    dispose: async () => {
+      globalThis.Response = OriginalResponse
+    },
+
     "chat.message": async (input, output) => {
-      // Check for built-in commands in the message text
-      const textParts = output.parts.filter((p: any) => p.type === "text")
-      const fullText = textParts.map((p: any) => p.text).join(" ")
-
-      if (fullText.startsWith("/toggle-speak")) {
-        speakEnabled = !speakEnabled
-        output.parts = [{
-          type: "text",
-          text: `🔊 Spoken summaries ${speakEnabled ? "enabled" : "disabled"}`,
-        } as any]
-        return
-      }
-
-      if (fullText.startsWith("/speak ")) {
-        const speakText = fullText.slice("/speak ".length).trim()
-        if (speakText) {
-          await doSpeak(speakText)
-          const preview = speakText.length > 80 ? speakText.slice(0, 77) + "..." : speakText
-          output.parts = [{ type: "text", text: `🔊 Spoke: "${preview}"` } as any]
-        } else {
-          output.parts = [{ type: "text", text: "Usage: /speak <text to speak>" } as any]
-        }
-        return
-      }
-
-      // Normal message — track agent for session.idle handler
       if (input.agent) {
         sessionAgent.set(input.sessionID, input.agent)
       }
+
+      const textParts = output.parts.filter((p: any) => p.type === "text" && !p.synthetic && !p.ignored)
+      if (textParts.length === 0) return
+      const fullText = textParts.map((p: any) => p.text).join(" ").trim()
+
+      if (fullText === "/toggle-speak") {
+        speakEnabled = !speakEnabled
+        speakSuppress = true
+        setTimeout(() => { speakSuppress = false }, 2000)
+        injectMessage(input.sessionID, `🔊 Spoken summaries ${speakEnabled ? "enabled" : "disabled"}`)
+        _log("/toggle-speak — raising suppress flag")
+        throw new Error("OPENTALK")
+      }
+
+      if (fullText.startsWith("/speak ")) {
+        const text = fullText.slice("/speak ".length).trim()
+        if (text) {
+          doSpeak(text).catch((err) => {
+            console.error("[OpenTalk] doSpeak failed:", err)
+          })
+          injectMessage(input.sessionID, `🔊 ${text}`)
+        }
+        speakSuppress = true
+        setTimeout(() => { speakSuppress = false }, 2000)
+        _log("/speak", text, "— raising suppress flag")
+        throw new Error("OPENTALK")
+      }
     },
 
-    // On session idle, summarize + speak
     event: async ({ event }) => {
       if (!speakEnabled) return
       if (event.type !== "session.idle") return
@@ -376,17 +358,17 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
       const responseText = await extractResponseText(sessionID)
       if (!responseText) return
 
-      // speak: true — speak the full response raw, no summarization
+      if (responseText.startsWith("🔊 ")) return
+
       if (directive.type === "full") {
         const truncated = responseText.length > 1000
           ? responseText.slice(0, 997) + "..."
           : responseText
-        doSpeak(truncated)
+        try { await doSpeak(truncated) } catch (err) { console.error("[OpenTalk] doSpeak failed:", err) }
         await injectMessage(sessionID, `🔊 ${truncated}`)
         return
       }
 
-      // speak: "..." — summarize via speak agent
       const instruction = directive.value
       try {
         const ttsSession = await client.session.create({ body: { title: "OpenTalk" } })
@@ -409,18 +391,17 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
           .join(" ").trim()
 
         if (spoken) {
-          doSpeak(spoken)
+          try { await doSpeak(spoken) } catch (err) { console.error("[OpenTalk] doSpeak failed:", err) }
           await injectMessage(sessionID, `🔊 ${spoken}`)
         }
 
         try { await client.session.delete({ path: { id: ttsSession.data.id } }) } catch {}
-      } catch { /* fail silently */ }
+      } catch (err) { console.error("[OpenTalk] summarization failed:", err) }
     },
   }
 
-  } catch {
-    // If ANYTHING in setup fails, return empty hooks.
-    // OpenCode continues working; the plugin is simply disabled.
+  } catch (err) {
+    console.error("[OpenTalk] Plugin setup failed, no hooks registered:", err)
     return {}
   }
 }

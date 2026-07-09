@@ -15,7 +15,7 @@ tts:
   #   say          — macOS built-in `say` command (no config needed)
   #   kokoro       — local kokoro-js, runs offline via ONNX (~86MB model)
   #   openrouter   — OpenAI-compatible /v1/audio/speech endpoint
-  engine: openrouter
+  engine: kokoro
 
   # Model slug on OpenRouter (only used when engine is openrouter).
   # Available TTS models on OpenRouter:
