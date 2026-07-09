@@ -67,9 +67,17 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
         }
       } catch (e) { bodyStr = "[err:" + String(e) + "]" }
       _log("RESP", (init as any)?.status ?? "?", "len=" + bodyStr.length, bodyStr.slice(0, 300))
-      if ((init as any)?.status >= 400 && (bodyStr.includes("Failed to send prompt") || bodyStr.includes("Unexpected server error"))) {
-        _log("SUPPRESSED")
-        return new OriginalResponse(JSON.stringify({ ok: true }), { ...(init ?? {}), status: 200 })
+      if ((init as any)?.status >= 400) {
+        // Match on the stable error type name instead of user-facing text
+        if (bodyStr.includes('"name":"UnknownError"') || bodyStr.includes('"name":"InternalServerError"')) {
+          _log("SUPPRESSED", bodyStr.slice(0, 200))
+          return new OriginalResponse(JSON.stringify({ ok: true }), { ...(init ?? {}), status: 200 })
+        }
+        // Fallback: also match on known display messages
+        if (bodyStr.includes("Failed to send prompt") || bodyStr.includes("Unexpected server error")) {
+          _log("SUPPRESSED (message match)", bodyStr.slice(0, 200))
+          return new OriginalResponse(JSON.stringify({ ok: true }), { ...(init ?? {}), status: 200 })
+        }
       }
     }
     return new OriginalResponse(body, init)
