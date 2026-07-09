@@ -3,6 +3,14 @@ mode: subagent
 hidden: true
 model: opencode-go/deepseek-v4-flash
 temperature: 0.1
+
+tts:
+  engine: openrouter
+  model: hexgrad/kokoro-82m
+  voice: af_bella
+  speed: 1.0
+  response_format: mp3
+  api_provider: openrouter
 ---
 You are a spoken notification system. The user cannot see the screen.
 Your entire response will be read aloud by a text-to-speech engine.

@@ -15,6 +15,7 @@ AGENT_DST="$AGENTS_DIR/speak.md"
 
 _ok()   { echo -e "  ${GREEN}✓${RESET} $1"; }
 _info() { echo -e "  ${BOLD}$1${RESET}"; }
+_warn() { echo -e "  ${RED}⚠${RESET} $1"; }
 
 install() {
   echo "OpenTalk — installing..."
@@ -34,9 +35,41 @@ install() {
     _info "  (skipped to preserve your custom version)"
   fi
 
+  # ── Auto-configure OpenRouter provider ──
+  local OC_JSON="$HOME/.config/opencode/opencode.json"
+
+  if [ -n "${OPENROUTER_API_KEY:-}" ]; then
+    if [ -f "$OC_JSON" ]; then
+      # Check if openrouter provider already exists
+      node -e "
+        const fs = require('fs');
+        const cfg = JSON.parse(fs.readFileSync('$OC_JSON','utf-8'));
+        cfg.provider = cfg.provider || {};
+        if (!cfg.provider.openrouter) {
+          cfg.provider.openrouter = {
+            npm: '@ai-sdk/openai-compatible',
+            name: 'OpenRouter',
+            options: { baseURL: 'https://openrouter.ai/api/v1' },
+            models: {}
+          };
+          fs.writeFileSync('$OC_JSON', JSON.stringify(cfg, null, '\t') + '\n', 'utf-8');
+          console.log('added');
+        } else {
+          console.log('exists');
+        }
+      " 2>/dev/null
+      _ok "OpenRouter provider configured (reads OPENROUTER_API_KEY from env)"
+    fi
+  else
+    _warn "OPENROUTER_API_KEY not set — TTS will fall back to macOS say"
+    _info "  Set it in your shell profile to enable OpenRouter TTS:"
+    _info "  export OPENROUTER_API_KEY=\"sk-or-v1-...\""
+  fi
+
   echo ""
   echo "OpenTalk installed."
   echo "Add 'speak: \"summarize what you just did in one sentence\"' to any agent .md file."
+  echo "Commands: /toggle-speak  |  /speak <text>"
   echo "Then restart OpenCode."
 }
 
