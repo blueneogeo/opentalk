@@ -1,36 +1,37 @@
 # OpenTalk
 
-An OpenCode extension that gives agents a spoken voice — without reading out their entire responses.
+An OpenCode plugin that gives agents a spoken voice — without reading out their entire responses.
 
 ## The Problem
 
-OpenCode model responses can be long. Having the full answer read aloud via TTS would be painfully slow and impractical. A simple "bleep" sound when a response is ready isn't helpful — you still have to look at the screen to know what happened.
+OpenCode agent responses can be long. Having the full answer read aloud via TTS would be painfully slow and impractical. A simple "bleep" sound when a response is ready isn't helpful — you still have to look at the screen to know what happened.
 
 ## The Solution
 
-OpenTalk lets you define a **per-agent spoken summary instruction**. After the main agent finishes its work, a dedicated **TTS agent** receives that instruction plus the full response, generates a short conversational summary, and pipes it to a TTS engine. Now you hear *"I just added a dark mode toggle"* instead of a bleep — and you only need to look at the screen if the summary isn't what you expected.
+OpenTalk lets you define a **per-agent spoken summary instruction**. After an agent finishes its work, a dedicated **speak agent** receives that instruction plus the full response, generates a short conversational summary, and pipes it through macOS `say`. The summary is also injected back into the conversation as a visible message so you can read it. Now you hear *"I just added a dark mode toggle"* — and only need to look at the screen if the summary isn't what you expected.
 
 ## High-Level Flow
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                      MAIN AGENT                         │
-│  Config: tts="Summarize in one conversational sentence" │
-│  ...does its work, produces final response...           │
-└───────────────────────┬─────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                        MAIN AGENT                            │
+│  Agent .md: speak="Summarize in one conversational sentence" │
+│  ...does its work, produces final response...                │
+└───────────────────────┬──────────────────────────────────────┘
                         │
-                        ▼
+                        ▼  session.idle
                 ┌───────────────┐
-                │   EXTENSION   │
-                │  (detects tts │
-                │  field is set)│
+                │    PLUGIN     │
+                │  (reads speak │
+                │  from agent   │
+                │   .md file)   │
                 └───────┬───────┘
                         │
            ┌────────────┴────────────┐
            │                         │
            ▼                         ▼
    ┌──────────────┐         ┌──────────────┐
-   │ tts prompt:  │         │  full final  │
+   │ speak prompt │         │  full final  │
    │ "Summarize   │         │   response   │
    │  in one..."  │         │   from main  │
    └──────┬───────┘         │    agent      │
@@ -40,70 +41,113 @@ OpenTalk lets you define a **per-agent spoken summary instruction**. After the m
                    │
                    ▼
         ┌─────────────────────┐
-        │     TTS AGENT       │
-        │  (dedicated, own    │
-        │   model/config)     │
+        │    SPEAK AGENT      │
+        │  (hidden subagent,  │
+        │  own model/config)  │
         │                     │
-        │  Input: tts prompt  │
-        │    + full response  │
+        │  Input: speak prompt│
+        │   + full response   │
         │  Output: "I just    │
         │   added a dark      │
         │   mode toggle."     │
         └──────────┬──────────┘
                    │
-                   ▼
-        ┌─────────────────────┐
-        │    TTS ENGINE       │
-        │  (macOS say,        │
-        │   ElevenLabs, etc.) │
-        └──────────┬──────────┘
-                   │
-                   ▼
-            🔊 "I just added
-                a dark mode
-                toggle."
+         ┌─────────┴─────────┐
+         │                   │
+         ▼                   ▼
+  ┌──────────────┐   ┌──────────────┐
+  │  macOS say   │   │  🔊 injected │
+  │  "Samantha"  │   │   back into  │
+  └──────┬───────┘   │ conversation │
+         │           └──────────────┘
+         ▼
+  🔊 "I just added
+      a dark mode
+      toggle."
 ```
 
 ## How It Works
 
-1. **Main agent** has a `tts` field in its configuration (the prompt for the TTS agent, e.g., *"Summarize what you just did in one conversational sentence"*).
-2. **Extension** detects the `tts` field is set on the current agent.
-3. Extension captures the main agent's **full final response** and the **tts prompt**.
-4. Extension passes both to the **TTS agent** — a dedicated, globally configured agent with its own model, system prompt, and style.
-5. The TTS agent returns a **short spoken summary**.
-6. Extension feeds that summary into the **TTS engine** and speaks it aloud.
+1. **Agent markdown** has a `speak` property in its YAML frontmatter (the prompt for the speak agent).
+2. **Plugin** tracks which agent handles each session via the `chat.message` hook.
+3. On **`session.idle`**, the plugin reads the agent's `speak` instruction from its `.md` file (cached).
+4. Plugin extracts the assistant's full text response from the session messages.
+5. Plugin creates a session for the **speak agent** (hidden subagent) and sends the instruction + full response.
+6. The speak agent returns a **short spoken summary** (one sentence, under 25 words).
+7. Summary is spoken via **macOS `say`** (fire-and-forget).
+8. Summary is also **injected back** into the conversation as a visible `🔊` message.
+9. The speak agent session is **cleaned up** immediately so it doesn't linger.
 
 ## Key Design Decisions
 
 | Decision | Reasoning |
 |----------|-----------|
 | **Not reading the full response** | Too slow and verbose. Short spoken summaries are actionable. |
-| **Dedicated TTS agent** | Full control over model, tone, and style. Separates concerns from the main agent. |
-| **`tts` prompt per main agent** | Different agents can have different summary styles (research agent, build agent, etc.). |
-| **TTS agent receives full final response** | It needs enough context to generate a meaningful summary. |
-| **Extension handles glue logic** | Main agent never knows TTS exists — no clutter in its context. |
-| **Separate model config for TTS agent** | Can use a cheaper/faster model for summarization, independent of the main agent's model. |
+| **Dedicated speak agent (hidden subagent)** | Full control over model, tone, and style. Separates concerns from the main agent. |
+| **`speak` prompt per main agent** | Different agents can have different summary styles. |
+| **Speak agent receives full final response** | Needs enough context to generate a meaningful summary. |
+| **Plugin handles all glue logic** | Main agent never knows TTS exists — no clutter in its context. |
+| **Separate model for speak agent** | Can use a cheaper/faster model than the main agent. |
+| **Summary visible in conversation** | User can read it too, not just hear it. |
+| **Loop guard** | Speak agent won't trigger itself (agent name check). |
+| **Session cleanup** | Speak agent session deleted immediately after use. |
+| **No server, no PID management** | Plugin hooks directly into OpenCode's event system. |
 
-## Configuration Example
+## Installation
 
-```yaml
-# Main agent (e.g., a code-review agent)
-agent:
-  name: code-reviewer
-  model: claude-sonnet-4
-  tts: "Give a 10-word status update in conversational style. Start with 'Hey,'"
-
-# TTS agent (global, in extension config)
-tts_agent:
-  name: opentalk
-  model: gpt-4o-mini
-  system_prompt: |
-    You are a concise spoken assistant. The user is blind or not looking at the screen.
-    Summarize the response as requested by the tts instruction. Be brief, natural, and conversational.
-    Never output markdown, code, or lists. One or two short sentences max.
-  tts_engine: say  # macOS built-in, or ElevenLabs, OpenAI TTS, etc.
+```bash
+cd opentalk
+./build.sh install
 ```
 
-## Status
+This copies:
+- `src/opentalk.ts` → `~/.config/opencode/plugins/opentalk.ts`
+- `agents/speak.md` → `~/.config/opencode/agents/speak.md` (only if not already present — preserves user overrides)
 
-Early specification phase. Implementation not yet started.
+Then restart OpenCode.
+
+To uninstall:
+```bash
+./build.sh uninstall
+```
+
+## Usage
+
+Add a `speak` property to any agent's markdown frontmatter:
+
+```yaml
+# ~/.config/opencode/agents/build.md
+---
+speak: "Give a 10-word status update on what you just did"
+---
+```
+
+No commands to run, no configuration needed beyond the `speak` line. Different agents get different instructions:
+
+```yaml
+# chat agent — conversational summary
+speak: "Summarize what you just said in one conversational sentence"
+
+# build agent — status update
+speak: "Give a 10-word status update on what you just did"
+
+# plan agent — key finding
+speak: "In one sentence, tell me the key finding or recommendation from your analysis"
+```
+
+## Speak Agent
+
+A dedicated hidden subagent at `~/.config/opencode/agents/speak.md`. Uses a fast/cheap model. User can override by placing their own `speak.md` in the same directory — the installer won't overwrite existing files.
+
+## Project Structure
+
+```
+opentalk/
+├── src/opentalk.ts       # The plugin
+├── agents/speak.md        # Speak agent definition
+├── build.sh               # Install / uninstall
+├── package.json           # @opencode-ai/plugin dependency
+├── tsconfig.json
+├── BUILDING_BLOCKS.md     # Type reference & verified building blocks
+└── README.md
+```
