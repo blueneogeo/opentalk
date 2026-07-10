@@ -7,7 +7,7 @@ talk:
   enabled: false
   summarize: true
   source: last-message
-  instruction: Summarize in one conversational sentence, under 25 words
+  instruction: Tell me in one conversational sentence, under 10 words
   model: opencode-go/deepseek-v4-flash
 
   voice:
