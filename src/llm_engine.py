@@ -7,7 +7,7 @@ Handles prompt building, token generation, and SSE streaming.
 import re
 import time
 import json
-from typing import Generator, Optional
+from typing import Generator
 
 
 def load_llm(model_id: str):
@@ -65,44 +65,10 @@ def generate_response(
     }
 
 
-def stream_response(
-    model,
-    tokenizer,
-    messages: list[dict],
-    temperature: float = 0.1,
-    max_tokens: int = 80,
-) -> Generator[str, None, None]:
-    """SSE streaming generator. Yields OpenAI-compatible SSE data lines."""
-    return _stream_impl(model, tokenizer, messages, temperature, max_tokens)
-
-
-def stream_and_speak(
-    model,
-    tokenizer,
-    messages: list[dict],
-    temperature: float = 0.1,
-    max_tokens: int = 80,
-    on_words=None,
-    word_buffer: int = 4,
-) -> Generator[str, None, None]:
-    """SSE streaming + TTS. Calls on_words(text) when enough words accumulate,
-    then flushes any remainder at the end. Yields SSE chunks for the client."""
-    return _stream_impl(model, tokenizer, messages, temperature, max_tokens,
-                        on_words=on_words, word_buffer=word_buffer)
-
-
-def _stream_impl(
-    model,
-    tokenizer,
-    messages: list[dict],
-    temperature: float = 0.1,
-    max_tokens: int = 80,
-    on_words=None,
-    word_buffer: int = 4,
-) -> Generator[str, None, None]:
-    """Core streaming: accumulate words, optionally speak, yield SSE."""
+def _stream_tokens(model, tokenizer, messages, max_tokens):
+    """Yields (text, full_text_so_far) tuples from the LLM, suppressing thinks."""
     prompt, _ = build_prompt(tokenizer, messages)
-    buffer = ""
+    full = ""
 
     from mlx_lm import stream_generate
 
@@ -110,7 +76,6 @@ def _stream_impl(
     for chunk in stream_generate(model, tokenizer, prompt=prompt, max_tokens=max_tokens):
         text = chunk.text
 
-        # Suppress <think> blocks from models like Qwen
         if "<think>" in text:
             in_think = True
             continue
@@ -119,25 +84,42 @@ def _stream_impl(
                 in_think = False
             continue
 
-        # Skip initial whitespace-only chunks
         if not text.strip():
             continue
 
-        buffer += text
+        full += text
+        yield text, full
 
-        # Speak if enough words accumulated
-        if on_words:
-            words = buffer.split()
-            if len(words) >= word_buffer:
-                to_speak = " ".join(words[:word_buffer])
-                on_words(to_speak)
-                buffer = " ".join(words[word_buffer:])
 
-        payload = json.dumps({"choices": [{"delta": {"content": text}}]})
-        yield f"data: {payload}\n\n"
+def stream_response(
+    model,
+    tokenizer,
+    messages: list[dict],
+    temperature: float = 0.1,
+    max_tokens: int = 80,
+) -> Generator[str, None, None]:
+    """SSE streaming generator. Yields OpenAI-compatible SSE data lines."""
+    for text, _ in _stream_tokens(model, tokenizer, messages, max_tokens):
+        yield f"data: {json.dumps({'choices': [{'delta': {'content': text}}]})}\n\n"
+    yield "data: [DONE]\n\n"
 
-    # Flush any remaining words at the end
-    if on_words and buffer.strip():
-        on_words(buffer.strip())
+
+def stream_and_speak(
+    model,
+    tokenizer,
+    messages: list[dict],
+    temperature: float = 0.1,
+    max_tokens: int = 80,
+    on_done=None,
+) -> Generator[str, None, None]:
+    """SSE streaming + TTS. Accumulates full text, yields SSE chunks,
+    then calls on_done(full_text) once at the end for smooth TTS playback."""
+    full_text = ""
+    for text, full in _stream_tokens(model, tokenizer, messages, max_tokens):
+        full_text = full
+        yield f"data: {json.dumps({'choices': [{'delta': {'content': text}}]})}\n\n"
+
+    if on_done and full_text.strip():
+        on_done(full_text.strip())
 
     yield "data: [DONE]\n\n"

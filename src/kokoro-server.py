@@ -19,13 +19,16 @@ Endpoints:
 """
 
 import argparse
+import os
+import queue as _queue
+import subprocess
 import sys
-import signal
+import tempfile
 import threading
 import time
-from typing import Optional, Any
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -55,37 +58,54 @@ def _load_tts_deps():
 
 # ── TTS playback ──
 
-import queue as _queue
-
 _speak_queue: _queue.Queue = _queue.Queue()
 _speak_worker_active = True
 
 
+def _play_wav(path: str, stop_event: threading.Event) -> int:
+    """Play a WAV file via afplay. Returns exit code. Kills on stop_event."""
+    proc = subprocess.Popen(["afplay", path])
+    # Watch for stop while afplay runs
+    while proc.poll() is None:
+        if stop_event.is_set():
+            proc.kill()
+            proc.wait()
+            return -1
+        time.sleep(0.1)
+    return proc.returncode
+
+
 def _speak_worker():
-    """Background thread that plays queued speech chunks sequentially."""
-    global _speak_worker_active
+    """Background thread: save text to WAV, play via afplay, clean up."""
     while _speak_worker_active:
         try:
             item = _speak_queue.get(timeout=0.5)
         except _queue.Empty:
             continue
-        if item is None:  # sentinel — shutdown
+        if item is None:
             break
         text, voice, speed = item
         stop_evt = threading.Event()
         _state.set_stop_event(stop_evt)
         _state.set_playing(True)
         _state.set_text(text)
+        path = None
         try:
-            _state.tts_model.speak(
-                text, voice=voice, speed=speed, stream=True, stop_event=stop_evt,
-            )
+            fd, path = tempfile.mkstemp(suffix=".wav", prefix="opentalk-")
+            os.close(fd)
+            _state.tts_model.save(text, path, voice=voice, speed=speed)
+            _play_wav(path, stop_evt)
         except Exception as e:
             print(f"[error] sequential speak failed: {e}", file=sys.stderr)
         finally:
             _state.set_playing(False)
             _state.set_text("")
             _state.clear_stop_event()
+            if path:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
 
 
 def tts_speak_sequential(text: str, voice: str = "af_bella", speed: float = 1.0) -> None:
@@ -159,8 +179,6 @@ def _start_keyboard_listener():
 
 # ── FastAPI app ──
 
-from contextlib import asynccontextmanager
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load models on startup, clean up on shutdown."""
@@ -226,10 +244,10 @@ class SummarizeRequest(BaseModel):
     temperature: float = Field(0.1, description="Sampling temperature")
     max_tokens: int = Field(80, description="Maximum tokens to generate")
     stream: bool = Field(False, description="Stream the response")
-    speak: bool = Field(False, description="Feed streamed words to TTS as they arrive")
+    speak: bool = Field(False, description="Feed the full response to TTS after generation")
     voice: str = Field("af_bella", description="Voice for TTS (when speak=true)")
     speed: float = Field(1.0, description="Speech speed (when speak=true)")
-    word_buffer: int = Field(4, description="Min words to accumulate before speaking")
+    word_buffer: int = Field(4, description="Reserved for future word-buffered streaming")
 
 
 # ── Routes ──
@@ -273,7 +291,7 @@ def summarize(req: SummarizeRequest):
     messages = [m.model_dump() for m in req.messages]
 
     if req.stream and req.speak:
-        def on_words(text: str):
+        def on_done(text: str):
             tts_speak_sequential(text, req.voice, req.speed)
 
         return StreamingResponse(
@@ -283,8 +301,7 @@ def summarize(req: SummarizeRequest):
                 messages,
                 temperature=req.temperature,
                 max_tokens=req.max_tokens,
-                on_words=on_words,
-                word_buffer=req.word_buffer,
+                on_done=on_done,
             ),
             media_type="text/event-stream",
         )
