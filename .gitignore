@@ -5,3 +5,4 @@ node_modules/
 .DS_Store
 .bun/
 dist/
+__pycache__/

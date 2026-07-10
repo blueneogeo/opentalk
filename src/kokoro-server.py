@@ -1,96 +1,106 @@
 #!/usr/bin/env python3
 """
-Kokoro TTS Server — streaming text-to-speech with MLX on Apple Silicon.
-kokoro-mlx handles audio playback internally via sounddevice.
-Escape key interrupts playback (requires macOS Accessibility permission).
+Kokoro TTS + LLM Summarization Server
+Serves speech synthesis and local LLM summarization via OpenAI-compatible endpoints.
 
-Usage:  uv run kokoro-server.py [--port 8765]
-Test:   curl http://127.0.0.1:8765/health
-Speak:  curl -X POST :8765/speak -H "Content-Type: application/json" -d '{"text":"hello","voice":"af_bella"}'
-Status: curl http://127.0.0.1:8765/status
-Stop:   curl -X POST :8765/stop
+Usage:
+  # TTS only
+  uv run kokoro-server.py --port 8765
+
+  # TTS + summarization
+  uv run kokoro-server.py --port 8765 --llm-model mlx-community/Qwen3.5-4B-4bit
+
+Endpoints:
+  GET  /health                  — server status
+  GET  /status                  — TTS playback state
+  POST /v1/audio/speech         — TTS speak (also: /speak)
+  POST /stop                    — stop playback
+  POST /summarize               — LLM summarization (also: /v1/chat/completions)
 """
 
 import argparse
-import json
-import threading
-import time
 import sys
 import signal
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from typing import Optional, Dict, Any
+import threading
+import time
+from typing import Optional, Any
 
-# ── Lazy imports ──
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
+
+from state import ServerState
+from llm_engine import load_llm, generate_response, stream_response, stream_and_speak
+
+# ── Global state ──
+_state = ServerState()
+
+# ── Lazy TTS imports ──
 _kokoro_tts = None
 _keyboard = None
 _Listener = None
 
 
-def _load_deps():
-    """Import heavy dependencies. Must be called during server startup."""
+def _load_tts_deps():
+    """Import TTS dependencies. Called during startup."""
     global _kokoro_tts, _keyboard, _Listener
-    try:
-        from kokoro_mlx import KokoroTTS
-        from pynput import keyboard as kb
-        from pynput.keyboard import Listener
-
-        _kokoro_tts = KokoroTTS
-        _keyboard = kb
-        _Listener = Listener
-    except ImportError as e:
-        print(f"[fatal] missing dependency: {e}", file=sys.stderr)
-        sys.exit(1)
+    from kokoro_mlx import KokoroTTS
+    from pynput import keyboard as kb
+    from pynput.keyboard import Listener
+    _kokoro_tts = KokoroTTS
+    _keyboard = kb
+    _Listener = Listener
 
 
-# ── Thread-safe state ──
+# ── TTS playback ──
+
+import queue as _queue
+
+_speak_queue: _queue.Queue = _queue.Queue()
+_speak_worker_active = True
 
 
-class ServerState:
-    """Thread-safe container for TTS server state."""
-
-    def __init__(self):
-        self._lock = threading.Lock()
-        self.model = None
-        self.playing = False
-        self.text = ""
-        self.stop_event: Optional[threading.Event] = None
-        self.listener: Any = None
-
-    def set_stop_event(self, event: threading.Event) -> None:
-        with self._lock:
-            self.stop_event = event
-
-    def clear_stop_event(self) -> Optional[threading.Event]:
-        with self._lock:
-            evt = self.stop_event
-            self.stop_event = None
-            return evt
-
-    def set_playing(self, playing: bool) -> None:
-        with self._lock:
-            self.playing = playing
-
-    def is_playing(self) -> bool:
-        with self._lock:
-            return self.playing
-
-    def set_text(self, text: str) -> None:
-        with self._lock:
-            self.text = text
-
-    def get_status(self) -> Dict[str, Any]:
-        with self._lock:
-            return {
-                "playing": self.playing,
-                "text": self.text[:80] if self.text else "",
-            }
+def _speak_worker():
+    """Background thread that plays queued speech chunks sequentially."""
+    global _speak_worker_active
+    while _speak_worker_active:
+        try:
+            item = _speak_queue.get(timeout=0.5)
+        except _queue.Empty:
+            continue
+        if item is None:  # sentinel — shutdown
+            break
+        text, voice, speed = item
+        stop_evt = threading.Event()
+        _state.set_stop_event(stop_evt)
+        _state.set_playing(True)
+        _state.set_text(text)
+        try:
+            _state.tts_model.speak(
+                text, voice=voice, speed=speed, stream=True, stop_event=stop_evt,
+            )
+        except Exception as e:
+            print(f"[error] sequential speak failed: {e}", file=sys.stderr)
+        finally:
+            _state.set_playing(False)
+            _state.set_text("")
+            _state.clear_stop_event()
 
 
-_state = ServerState()
+def tts_speak_sequential(text: str, voice: str = "af_bella", speed: float = 1.0) -> None:
+    """Queue text for sequential playback without interrupting current speech."""
+    _speak_queue.put((text, voice, speed))
 
 
-def stop():
-    """Signal the current speech playback to stop."""
+def tts_stop():
+    """Signal the current speech playback to stop and drain the queue."""
+    # Clear any pending sequential chunks
+    while not _speak_queue.empty():
+        try:
+            _speak_queue.get_nowait()
+        except _queue.Empty:
+            break
     evt = _state.clear_stop_event()
     if evt:
         evt.set()
@@ -98,44 +108,11 @@ def stop():
     _state.set_text("")
 
 
-def _start_listener():
-    """Start the global keyboard listener. On success, Escape interrupts speech.
-    On macOS this requires Accessibility permission for the terminal/Python."""
-    if _state.listener is not None:
-        return
-
-    def on_press(key):
-        if key == _keyboard.Key.esc:
-            print("[info] escape pressed — stopping speech", flush=True)
-            stop()
-
-    try:
-        lst = _Listener(on_press=on_press)
-        lst.daemon = True
-        lst.start()
-        _state.listener = lst
-        print("[info] escape-key listener active", flush=True)
-        print(
-            "[info] if Escape does not interrupt speech, grant Accessibility "
-            "permission in System Settings > Privacy & Security > Accessibility",
-            flush=True,
-        )
-    except Exception as e:
-        print("[warn] cannot start escape-key listener: %s" % e, file=sys.stderr, flush=True)
-        print(
-            "[warn] grant Accessibility permission in "
-            "System Settings > Privacy & Security > Accessibility",
-            file=sys.stderr, flush=True,
-        )
-
-
-def speak_async(text: str, voice: str = "af_bella", speed: float = 1.0) -> None:
-    """Begin playing speech in a background thread."""
+def tts_speak(text: str, voice: str = "af_bella", speed: float = 1.0) -> None:
+    """Begin speaking in a background thread. Stops any current playback first."""
     if _state.is_playing():
-        # Stop current playback and wait for cleanup
-        stop()
+        tts_stop()
         time.sleep(0.15)
-        # Double-check the previous thread fully reset
         if _state.is_playing():
             time.sleep(0.15)
 
@@ -146,8 +123,8 @@ def speak_async(text: str, voice: str = "af_bella", speed: float = 1.0) -> None:
 
     def _run():
         try:
-            _state.model.speak(
-                text, voice=voice, speed=speed, stream=True, stop_event=stop_evt
+            _state.tts_model.speak(
+                text, voice=voice, speed=speed, stream=True, stop_event=stop_evt,
             )
         except Exception as e:
             print(f"[error] speak failed: {e}", file=sys.stderr)
@@ -160,122 +137,195 @@ def speak_async(text: str, voice: str = "af_bella", speed: float = 1.0) -> None:
     t.start()
 
 
-# ── HTTP ──
+def _start_keyboard_listener():
+    """Escape key interrupts speech."""
+    if _state.listener is not None:
+        return
+
+    def on_press(key):
+        if key == _keyboard.Key.esc:
+            print("[info] escape pressed — stopping speech", flush=True)
+            tts_stop()
+
+    try:
+        lst = _Listener(on_press=on_press)
+        lst.daemon = True
+        lst.start()
+        _state.listener = lst
+        print("[info] escape-key listener active", flush=True)
+    except Exception as e:
+        print(f"[warn] cannot start escape-key listener: {e}", file=sys.stderr, flush=True)
 
 
-def _read_body(rfile, headers) -> str:
-    """Read exactly Content-Length bytes from the socket (handles TCP fragmentation)."""
-    n = int(headers.get("Content-Length", 0))
-    if n == 0:
-        return ""
-    chunks = []
-    remaining = n
-    while remaining > 0:
-        chunk = rfile.read(remaining)
-        if not chunk:
-            break
-        chunks.append(chunk)
-        remaining -= len(chunk)
-    return b"".join(chunks).decode()
+# ── FastAPI app ──
 
+from contextlib import asynccontextmanager
 
-class Handler(BaseHTTPRequestHandler):
-    def log_message(self, *args):
-        # Suppress default HTTP access logging (noisy in a plugin context)
-        pass
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Load models on startup, clean up on shutdown."""
+    print("Loading TTS dependencies...")
+    _load_tts_deps()
 
-    def _json(self, status: int, data: Dict[str, Any]) -> None:
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
+    print("Loading TTS model (~300MB first run)...")
+    try:
+        _state.tts_model = _kokoro_tts.from_pretrained()
+        print("TTS model loaded.")
+    except Exception as e:
+        print(f"[fatal] TTS model loading failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    _start_keyboard_listener()
+
+    # Start the sequential speech worker
+    threading.Thread(target=_speak_worker, daemon=True).start()
+
+    llm_id = getattr(app.state, "llm_model_id", None)
+    if llm_id:
+        print(f"Loading LLM: {llm_id} ...")
         try:
-            self.wfile.write(json.dumps(data).encode() + b"\n")
-        except (BrokenPipeError, ConnectionResetError):
-            pass
+            model, tok = load_llm(llm_id)
+            _state.llm_model = model
+            _state.llm_tokenizer = tok
+            print("LLM loaded.")
+        except Exception as e:
+            print(f"[warn] LLM loading failed: {e}", file=sys.stderr, flush=True)
 
-    def _body(self) -> str:
-        return _read_body(self.rfile, self.headers)
+    yield
 
-    def do_GET(self):
-        if self.path == "/health":
-            self._json(
-                200,
-                {
-                    "ok": True,
-                    "model": "loaded" if _state.model else "loading",
-                },
-            )
-        elif self.path == "/status":
-            self._json(200, _state.get_status())
-        else:
-            self._json(404, {"error": "not found"})
+    global _speak_worker_active
+    _speak_worker_active = False
+    _speak_queue.put(None)  # sentinel
+    tts_stop()
 
-    def do_POST(self):
-        body = self._body()
-        try:
-            data = json.loads(body) if body else {}
-        except json.JSONDecodeError:
-            self._json(400, {"error": "invalid json"})
-            return
+app = FastAPI(title="Kokoro TTS + LLM Server", version="0.2.0", lifespan=lifespan)
 
-        if self.path == "/speak":
-            text = data.get("text", "").strip()
-            if not text:
-                self._json(400, {"error": "text is required"})
-                return
-            print(
-                f"[speak] text={text[:80]} voice={data.get('voice', 'af_bella')}",
-                flush=True,
-            )
-            speak_async(
-                text, data.get("voice", "af_bella"), float(data.get("speed", 1.0))
-            )
-            self._json(202, {"status": "speaking", "text": text[:80]})
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-        elif self.path == "/stop":
-            was = _state.is_playing()
-            stop()
-            self._json(200, {"stopped": was})
 
-        else:
-            self._json(404, {"error": "not found"})
+# ── Pydantic models ──
 
+class SpeakRequest(BaseModel):
+    text: str = Field(..., description="Text to speak")
+    voice: str = Field("af_bella", description="Voice name")
+    speed: float = Field(1.0, description="Speech speed multiplier")
+
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class SummarizeRequest(BaseModel):
+    messages: list[ChatMessage] = Field(..., description="Chat messages (system + user)")
+    temperature: float = Field(0.1, description="Sampling temperature")
+    max_tokens: int = Field(80, description="Maximum tokens to generate")
+    stream: bool = Field(False, description="Stream the response")
+    speak: bool = Field(False, description="Feed streamed words to TTS as they arrive")
+    voice: str = Field("af_bella", description="Voice for TTS (when speak=true)")
+    speed: float = Field(1.0, description="Speech speed (when speak=true)")
+    word_buffer: int = Field(4, description="Min words to accumulate before speaking")
+
+
+# ── Routes ──
+
+@app.get("/health")
+def health():
+    return {
+        "ok": True,
+        "tts": "loaded" if _state.tts_model else "loading",
+        "llm": "loaded" if _state.llm_model else "unavailable",
+    }
+
+
+@app.get("/status")
+def status():
+    return _state.get_status()
+
+
+@app.post("/v1/audio/speech")
+@app.post("/speak")
+def speak(req: SpeakRequest):
+    if not req.text.strip():
+        raise HTTPException(400, "text is required")
+    tts_speak(req.text, req.voice, req.speed)
+    return {"status": "speaking", "text": req.text[:80]}
+
+
+@app.post("/stop")
+def stop():
+    was = _state.is_playing()
+    tts_stop()
+    return {"stopped": was}
+
+
+@app.post("/summarize")
+@app.post("/v1/chat/completions")
+def summarize(req: SummarizeRequest):
+    if _state.llm_model is None:
+        raise HTTPException(503, "LLM not loaded — start server with --llm-model")
+
+    messages = [m.model_dump() for m in req.messages]
+
+    if req.stream and req.speak:
+        def on_words(text: str):
+            tts_speak_sequential(text, req.voice, req.speed)
+
+        return StreamingResponse(
+            stream_and_speak(
+                _state.llm_model,
+                _state.llm_tokenizer,
+                messages,
+                temperature=req.temperature,
+                max_tokens=req.max_tokens,
+                on_words=on_words,
+                word_buffer=req.word_buffer,
+            ),
+            media_type="text/event-stream",
+        )
+
+    if req.stream:
+        return StreamingResponse(
+            stream_response(
+                _state.llm_model,
+                _state.llm_tokenizer,
+                messages,
+                temperature=req.temperature,
+                max_tokens=req.max_tokens,
+            ),
+            media_type="text/event-stream",
+        )
+
+    result = generate_response(
+        _state.llm_model,
+        _state.llm_tokenizer,
+        messages,
+        temperature=req.temperature,
+        max_tokens=req.max_tokens,
+    )
+    return JSONResponse(result)
+
+
+# ── Entrypoint ──
 
 def main():
-    p = argparse.ArgumentParser()
+    p = argparse.ArgumentParser(description="Kokoro TTS + LLM Server")
     p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--llm-model", type=str,
+                   default="mlx-community/Qwen3.5-4B-4bit",
+                   help="HuggingFace MLX model ID (default: Qwen3.5-4B)")
     args = p.parse_args()
 
-    print("Loading deps...")
-    _load_deps()
-    print("Loading model (~300MB first run)...")
-    try:
-        _state.model = _kokoro_tts.from_pretrained()
-    except Exception as e:
-        print(f"[fatal] model loading failed: {e}", file=sys.stderr)
-        sys.exit(1)
-    print("Model loaded.")
+    # Store LLM model ID so startup() can load it
+    app.state.llm_model_id = args.llm_model
 
-    _start_listener()
-
-    srv = HTTPServer(("127.0.0.1", args.port), Handler)
-    print(f"Server: http://127.0.0.1:{args.port}")
-
-    def shutdown(*_):
-        stop()
-        # shutdown() must be called from a thread other than the signal handler
-        t = threading.Thread(target=srv.shutdown, daemon=True)
-        t.start()
-        t.join(timeout=2)
-
-    signal.signal(signal.SIGINT, shutdown)
-    signal.signal(signal.SIGTERM, shutdown)
-
-    try:
-        srv.serve_forever()
-    except KeyboardInterrupt:
-        pass
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="info")
 
 
 if __name__ == "__main__":

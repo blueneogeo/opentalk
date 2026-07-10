@@ -11,12 +11,16 @@ SRC_DIR="$SCRIPT_DIR/src"
 BUNDLE_SRC="$SCRIPT_DIR/dist/opentalk.js"
 AGENT_SRC="$SCRIPT_DIR/agents/talk.md"
 SERVER_SRC="$SRC_DIR/kokoro-server.py"
+STATE_SRC="$SRC_DIR/state.py"
+LLM_SRC="$SRC_DIR/llm_engine.py"
 PLUGINS_DIR="$HOME/.config/opencode/plugins"
 AGENTS_DIR="$HOME/.config/opencode/agents"
 PLUGIN_DST="$PLUGINS_DIR/opentalk.ts"
 AGENT_DST="$AGENTS_DIR/talk.md"
 OPENTALK_DIR="$HOME/.opentalk"
 SERVER_DST="$OPENTALK_DIR/kokoro-server.py"
+STATE_DST="$OPENTALK_DIR/state.py"
+LLM_DST="$OPENTALK_DIR/llm_engine.py"
 VENV_DIR="$OPENTALK_DIR/venv"
 PID_FILE="$OPENTALK_DIR/server.pid"
 LOG_FILE="$OPENTALK_DIR/server.log"
@@ -49,15 +53,17 @@ install() {
   cp "$BUNDLE_SRC" "$PLUGIN_DST"
   _ok "Plugin installed: $PLUGIN_DST"
 
+  cp "$SERVER_SRC" "$SERVER_DST"
+  cp "$STATE_SRC" "$STATE_DST"
+  cp "$LLM_SRC" "$LLM_DST"
+  _ok "Server installed: $OPENTALK_DIR/"
+
   if [ ! -f "$AGENT_DST" ]; then
     cp "$AGENT_SRC" "$AGENT_DST"
     _ok "Speak agent installed: $AGENT_DST"
   else
     _info "Speak agent already exists (preserved): $AGENT_DST"
   fi
-
-  cp "$SERVER_SRC" "$SERVER_DST"
-  _ok "TTS server installed: $SERVER_DST"
 
   # ── Set up Python MLX environment ──
   if [ ! -d "$VENV_DIR" ]; then
