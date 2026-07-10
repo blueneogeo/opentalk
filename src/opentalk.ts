@@ -81,10 +81,16 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
         .join(" ")
         .trim()
 
-      if (fullText === "/toggle-speak") {
-        speakEnabled = !speakEnabled
-        await injectMessage(client, input.sessionID,
-          `🔊 Spoken summaries ${speakEnabled ? "enabled" : "disabled"}`)
+      if (fullText === "/set-speak on") {
+        speakEnabled = true
+        await injectMessage(client, input.sessionID, "🔊 Spoken summaries enabled")
+        activateSuppression()
+        throw new OpenTalkAbortError()
+      }
+
+      if (fullText === "/set-speak off") {
+        speakEnabled = false
+        await injectMessage(client, input.sessionID, "🔊 Spoken summaries disabled")
         activateSuppression()
         throw new OpenTalkAbortError()
       }

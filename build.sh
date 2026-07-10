@@ -123,7 +123,7 @@ install() {
   echo "  build.sh status   — check if it's running"
   echo "  build.sh stop     — shut it down"
   echo ""
-  echo "In-chat commands: /toggle-speak  |  /speak <text>"
+  echo "In-chat commands: /set-speak on|off  |  /speak <text>"
   echo "Restart OpenCode."
 }
 
