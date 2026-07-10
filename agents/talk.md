@@ -3,7 +3,7 @@ mode: subagent
 hidden: true
 temperature: 0.1
 
-speak:
+talk:
   enabled: false
   process: true
   instruction: Summarize in one conversational sentence, under 25 words

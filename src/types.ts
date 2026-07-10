@@ -9,8 +9,8 @@ export interface VoiceConfig {
   baseUrl?: string
 }
 
-/** Resolved speak configuration for a specific agent (base defaults + agent overrides merged) */
-export interface SpeakConfig {
+/** Resolved talk configuration for a specific agent (base defaults + agent overrides merged) */
+export interface TalkConfig {
   enabled: boolean
   process: boolean
   instruction: string

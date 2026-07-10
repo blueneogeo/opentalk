@@ -1,16 +1,16 @@
 import { describe, it, expect } from "vitest"
-import { parseSpeakBlock } from "../src/config"
+import { parseTalkBlock } from "../src/config"
 
-describe("parseSpeakBlock", () => {
-  it("parses a simple speak block", () => {
+describe("parseTalkBlock", () => {
+  it("parses a simple talk block", () => {
     const input = `mode: primary
-speak:
+talk:
   enabled: true
   process: false
   instruction: Custom instruction
   model: custom-model
 `
-    const result = parseSpeakBlock(input)
+    const result = parseTalkBlock(input)
     expect(result).toEqual({
       enabled: "true",
       process: "false",
@@ -19,24 +19,24 @@ speak:
     })
   })
 
-  it("returns null when no speak block is present", () => {
+  it("returns null when no talk block is present", () => {
     const input = `description: something
 mode: subagent
 `
-    expect(parseSpeakBlock(input)).toBeNull()
+    expect(parseTalkBlock(input)).toBeNull()
   })
 
-  it("returns null for empty speak block", () => {
+  it("returns null for empty talk block", () => {
     const input = `
-speak:
+talk:
   # only a comment
 next: thing
 `
-    expect(parseSpeakBlock(input)).toBeNull()
+    expect(parseTalkBlock(input)).toBeNull()
   })
 
-  it("parses a speak block with voice sub-block", () => {
-    const input = `speak:
+  it("parses a talk block with voice sub-block", () => {
+    const input = `talk:
   enabled: true
   voice:
     provider: openrouter
@@ -45,7 +45,7 @@ next: thing
     speed: 1.5
     response_format: pcm
 `
-    const result = parseSpeakBlock(input)
+    const result = parseTalkBlock(input)
     expect(result).toEqual({
       enabled: "true",
       voice: {
@@ -58,13 +58,13 @@ next: thing
     })
   })
 
-  it("parses a speak block with only voice (agent override)", () => {
-    const input = `speak:
+  it("parses a talk block with only voice (agent override)", () => {
+    const input = `talk:
   enabled: true
   voice:
     provider: say
 `
-    const result = parseSpeakBlock(input)
+    const result = parseTalkBlock(input)
     expect(result).toEqual({
       enabled: "true",
       voice: { provider: "say" },
@@ -72,47 +72,47 @@ next: thing
   })
 
   it("stops parsing at the next top-level key", () => {
-    const input = `speak:
+    const input = `talk:
   enabled: true
   process: false
 next_key: value
   should_be_ignored: yes
 `
-    const result = parseSpeakBlock(input)
+    const result = parseTalkBlock(input)
     expect(result).toEqual({ enabled: "true", process: "false" })
   })
 
   it("ignores comments", () => {
-    const input = `speak:
+    const input = `talk:
   # this is a comment
   enabled: true
   # another comment
   process: false
 `
-    const result = parseSpeakBlock(input)
+    const result = parseTalkBlock(input)
     expect(result).toEqual({ enabled: "true", process: "false" })
   })
 
   it("ignores empty lines", () => {
-    const input = `speak:
+    const input = `talk:
 
   enabled: true
 
   process: false
 
 `
-    const result = parseSpeakBlock(input)
+    const result = parseTalkBlock(input)
     expect(result).toEqual({ enabled: "true", process: "false" })
   })
 
   it("handles keys with underscores in voice block", () => {
-    const input = `speak:
+    const input = `talk:
   voice:
     api_provider: openrouter
     response_format: mp3
     base_url: https://example.com
 `
-    const result = parseSpeakBlock(input)
+    const result = parseTalkBlock(input)
     expect(result).toEqual({
       voice: {
         api_provider: "openrouter",
@@ -123,33 +123,33 @@ next_key: value
   })
 
   it("handles values with colons in voice block (URLs)", () => {
-    const input = `speak:
+    const input = `talk:
   voice:
     base_url: https://openrouter.ai/api/v1
 `
-    const result = parseSpeakBlock(input)
+    const result = parseTalkBlock(input)
     expect(result).toEqual({
       voice: { base_url: "https://openrouter.ai/api/v1" },
     })
   })
 
   it("handles tab indentation", () => {
-    const input = "speak:\n\tenabled: true\n\tvoice:\n\t\tprovider: say"
-    const result = parseSpeakBlock(input)
+    const input = "talk:\n\tenabled: true\n\tvoice:\n\t\tprovider: say"
+    const result = parseTalkBlock(input)
     expect(result).toEqual({
       enabled: "true",
       voice: { provider: "say" },
     })
   })
 
-  it("voice block between speak keys", () => {
-    const input = `speak:
+  it("voice block between talk keys", () => {
+    const input = `talk:
   enabled: true
   voice:
     provider: say
   process: false
 `
-    const result = parseSpeakBlock(input)
+    const result = parseTalkBlock(input)
     expect(result).toEqual({
       enabled: "true",
       process: "false",
@@ -158,10 +158,10 @@ next_key: value
   })
 
   it("only-enabled override", () => {
-    const input = `speak:
+    const input = `talk:
   enabled: true
 `
-    const result = parseSpeakBlock(input)
+    const result = parseTalkBlock(input)
     expect(result).toEqual({ enabled: "true" })
   })
 })

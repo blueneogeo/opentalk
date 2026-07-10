@@ -1,9 +1,9 @@
 /**
  * OpenTalk — OpenCode plugin that speaks short summaries when agents finish.
  *
- * On session.idle, reads the agent's resolved `speak:` config (base defaults
- * from speak.md deep-merged with per-agent overrides):
- * - process: true  → spawns the speak subagent to summarize, then speaks
+ * On session.idle, reads the agent's resolved `talk:` config (base defaults
+ * from talk.md deep-merged with per-agent overrides):
+ * - process: true  → spawns the talk subagent to summarize, then speaks
  * - process: false → speaks the raw response text directly
  * - enabled: false → no speaking
  */
@@ -14,12 +14,12 @@ import {
   uninstallResponseSuppression,
   activateSuppression,
 } from "./response-suppression"
-import { createSpeakConfigResolver } from "./config"
+import { createTalkConfigResolver } from "./config"
 import { injectMessage } from "./session"
 import { doSpeak } from "./tts-engines/registry"
-import type { SpeakConfig } from "./types"
+import type { TalkConfig } from "./types"
 
-const AGENT_NAME = "speak"
+const AGENT_NAME = "talk"
 
 class OpenTalkAbortError extends Error {
   constructor() {
@@ -32,7 +32,7 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
   log("Plugin loaded")
   installResponseSuppression()
 
-  const { getSpeakConfig, getVoiceConfig } = createSpeakConfigResolver({
+  const { getTalkConfig, getVoiceConfig } = createTalkConfigResolver({
     directory,
     async resolveProvider(providerId) {
       try {
@@ -56,7 +56,7 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
     },
   })
 
-  let speakEnabled = true
+  let talkEnabled = true
   const sessionAgent = new Map<string, string>()
 
   return {
@@ -80,22 +80,22 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
         .join(" ")
         .trim()
 
-      if (fullText === "/set-speak on") {
-        speakEnabled = true
+      if (fullText === "/talk on") {
+        talkEnabled = true
         await injectMessage(client, input.sessionID, "🔊 Spoken summaries enabled")
         activateSuppression()
         throw new OpenTalkAbortError()
       }
 
-      if (fullText === "/set-speak off") {
-        speakEnabled = false
+      if (fullText === "/talk off") {
+        talkEnabled = false
         await injectMessage(client, input.sessionID, "🔊 Spoken summaries disabled")
         activateSuppression()
         throw new OpenTalkAbortError()
       }
 
-      if (fullText.startsWith("/speak ")) {
-        const text = fullText.slice("/speak ".length).trim()
+      if (fullText.startsWith("/say ")) {
+        const text = fullText.slice("/say ".length).trim()
         if (text) {
           const voiceCfg = await getVoiceConfig()
           doSpeak(text, voiceCfg)
@@ -107,14 +107,14 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
     },
 
     event: async ({ event }) => {
-      if (!speakEnabled) return
+      if (!talkEnabled) return
       if (event.type !== "session.idle") return
 
       const { sessionID } = event.properties
       const agentName = sessionAgent.get(sessionID)
       if (!agentName || agentName === AGENT_NAME) return
 
-      const config = await getSpeakConfig(agentName)
+      const config = await getTalkConfig(agentName)
       if (!config) return
 
       // Extract the assistant's response text

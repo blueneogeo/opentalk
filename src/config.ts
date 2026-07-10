@@ -1,20 +1,20 @@
 /**
- * Speak configuration loading, parsing, merging, and resolution.
+ * Talk configuration loading, parsing, merging, and resolution.
  *
- * Reads the `speak:` block from speak.md (base defaults) and from each
+ * Reads the `talk:` block from talk.md (base defaults) and from each
  * agent's .md file (overrides). Deep-merges them into a resolved
- * SpeakConfig per agent, with voice provider credential resolution.
+ * TalkConfig per agent, with voice provider credential resolution.
  */
 import { join } from "node:path"
 import { readFileSync, existsSync } from "node:fs"
 import { homedir } from "node:os"
-import type { SpeakConfig, VoiceConfig } from "./types"
+import type { TalkConfig, VoiceConfig } from "./types"
 
 // ── Constants ──
 
-const AGENT_NAME_SPEAK = "speak"
+const AGENT_NAME_TALK = "talk"
 
-const HARD_DEFAULTS: SpeakConfig = {
+const HARD_DEFAULTS: TalkConfig = {
   enabled: false,
   process: true,
   instruction: "Summarize in one conversational sentence, under 25 words",
@@ -28,7 +28,7 @@ const CONFIG_LOAD_TIMEOUT_MS = 10_000
 
 // ── Parser types ──
 
-interface ParsedSpeakBlock {
+interface ParsedTalkBlock {
   enabled?: string
   process?: string
   instruction?: string
@@ -59,51 +59,51 @@ export type ProviderResolver = (
   providerId: string,
 ) => Promise<ProviderInfo | null>
 
-// ── YAML frontmatter parser (nested `speak:` block) ──
+// ── YAML frontmatter parser (nested `talk:` block) ──
 
 /**
- * Parses the `speak:` block from YAML frontmatter, including
- * the nested `voice:` sub-block. Returns null if no `speak:`
+ * Parses the `talk:` block from YAML frontmatter, including
+ * the nested `voice:` sub-block. Returns null if no `talk:`
  * block is found or the block is empty.
  */
-export function parseSpeakBlock(frontmatter: string): ParsedSpeakBlock | null {
+export function parseTalkBlock(frontmatter: string): ParsedTalkBlock | null {
   const lines = frontmatter.split("\n")
 
-  // Find the `speak:` line at indent 0
+  // Find the `talk:` line at indent 0
   let i = 0
   while (i < lines.length) {
-    if (lines[i].trimStart().startsWith("speak:")) break
+    if (lines[i].trimStart().startsWith("talk:")) break
     i++
   }
   if (i >= lines.length) return null
-  i++ // skip past `speak:` line
+  i++ // skip past `talk:` line
 
-  // Determine speak-level indentation from the first content line
-  let speakIndent = -1
+  // Determine talk-level indentation from the first content line
+  let talkIndent = -1
   for (let j = i; j < lines.length; j++) {
     const t = lines[j].trim()
     if (t !== "" && !t.startsWith("#")) {
-      speakIndent = lines[j].length - t.length
+      talkIndent = lines[j].length - t.length
       break
     }
   }
-  if (speakIndent < 0) return null // empty block
+  if (talkIndent < 0) return null // empty block
 
-  const result: ParsedSpeakBlock = {}
+  const result: ParsedTalkBlock = {}
 
   for (; i < lines.length; i++) {
     const line = lines[i]
     const trimmed = line.trim()
     const indent = line.length - trimmed.length
 
-    // Exit speak block on a non-indented, non-empty, non-comment line
+    // Exit talk block on a non-indented, non-empty, non-comment line
     if (indent === 0 && trimmed !== "" && !trimmed.startsWith("#")) break
 
     // Skip empty lines and comments
     if (trimmed === "" || trimmed.startsWith("#")) continue
 
-    // Only process lines at the speak-level indent
-    if (indent !== speakIndent) continue
+    // Only process lines at the talk-level indent
+    if (indent !== talkIndent) continue
 
     const m = trimmed.match(/^([\w_]+):\s*(.*)$/)
     if (!m) continue
@@ -119,7 +119,7 @@ export function parseSpeakBlock(frontmatter: string): ParsedSpeakBlock | null {
         const vt = vl.trim()
         const vi = vl.length - vt.length
 
-        if (vi <= speakIndent) {
+        if (vi <= talkIndent) {
           voiceEnd = j
           break
         }
@@ -142,7 +142,7 @@ export function parseSpeakBlock(frontmatter: string): ParsedSpeakBlock | null {
     }
   }
 
-  // Allow empty speak block with voice as valid
+  // Allow empty talk block with voice as valid
   if (Object.keys(result).length === 0 && !result.voice) return null
   return result
 }
@@ -153,8 +153,8 @@ function parseBool(raw: string, fallback: boolean): boolean {
   return raw === "true" ? true : raw === "false" ? false : fallback
 }
 
-function toSpeakConfig(raw: ParsedSpeakBlock): DeepPartial<SpeakConfig> {
-  const cfg: DeepPartial<SpeakConfig> = {}
+function toTalkConfig(raw: ParsedTalkBlock): DeepPartial<TalkConfig> {
+  const cfg: DeepPartial<TalkConfig> = {}
 
   if (raw.enabled !== undefined) cfg.enabled = parseBool(raw.enabled, false)
   if (raw.process !== undefined) cfg.process = parseBool(raw.process, true)
@@ -181,10 +181,10 @@ function toSpeakConfig(raw: ParsedSpeakBlock): DeepPartial<SpeakConfig> {
 
 // ── Deep merge ──
 
-function mergeSpeakConfig(
-  base: SpeakConfig,
-  override: DeepPartial<SpeakConfig>,
-): SpeakConfig {
+function mergeTalkConfig(
+  base: TalkConfig,
+  override: DeepPartial<TalkConfig>,
+): TalkConfig {
   return {
     enabled: override.enabled ?? base.enabled,
     process: override.process ?? base.process,
@@ -203,11 +203,11 @@ function mergeSpeakConfig(
 
 // ── File path resolution ──
 
-function speakMdPaths(directory: string): string[] {
+function talkMdPaths(directory: string): string[] {
   return [
-    join(directory, ".opencode", "agents", "speak.md"),
-    join(directory, "agents", "speak.md"),
-    join(homedir(), ".config", "opencode", "agents", "speak.md"),
+    join(directory, ".opencode", "agents", "talk.md"),
+    join(directory, "agents", "talk.md"),
+    join(homedir(), ".config", "opencode", "agents", "talk.md"),
   ]
 }
 
@@ -228,15 +228,15 @@ function extractFrontmatter(content: string): string | null {
 
 // ── Base config loading ──
 
-function loadBaseConfig(directory: string): SpeakConfig {
-  for (const p of speakMdPaths(directory)) {
+function loadBaseConfig(directory: string): TalkConfig {
+  for (const p of talkMdPaths(directory)) {
     try {
       if (!existsSync(p)) continue
       const fm = extractFrontmatter(readFileSync(p, "utf-8"))
       if (!fm) continue
-      const block = parseSpeakBlock(fm)
+      const block = parseTalkBlock(fm)
       if (!block) continue
-      return mergeSpeakConfig(HARD_DEFAULTS, toSpeakConfig(block))
+      return mergeTalkConfig(HARD_DEFAULTS, toTalkConfig(block))
     } catch {
       // Config file errors → skip, try next path or fall through to defaults
     }
@@ -249,15 +249,15 @@ function loadBaseConfig(directory: string): SpeakConfig {
 function loadAgentConfig(
   directory: string,
   agentName: string,
-): DeepPartial<SpeakConfig> | null {
+): DeepPartial<TalkConfig> | null {
   for (const p of agentMdPaths(directory, agentName)) {
     try {
       if (!existsSync(p)) continue
       const fm = extractFrontmatter(readFileSync(p, "utf-8"))
       if (!fm) continue
-      const block = parseSpeakBlock(fm)
+      const block = parseTalkBlock(fm)
       if (!block) continue
-      return toSpeakConfig(block)
+      return toTalkConfig(block)
     } catch {
       // skip
     }
@@ -311,23 +311,23 @@ interface CreateResolverParams {
 }
 
 /**
- * Creates a speak config resolver for a given project directory.
- * Base config (from speak.md) is loaded once and cached.
+ * Creates a talk config resolver for a given project directory.
+ * Base config (from talk.md) is loaded once and cached.
  * Agent-level overrides are parsed and merged on each call,
  * with per-agent caching.
  */
-export function createSpeakConfigResolver(params: CreateResolverParams) {
-  let baseConfig: SpeakConfig | null = null
+export function createTalkConfigResolver(params: CreateResolverParams) {
+  let baseConfig: TalkConfig | null = null
   let baseLoading = false
-  let basePromise: Promise<SpeakConfig> | null = null
-  const agentCache = new Map<string, SpeakConfig | null>()
+  let basePromise: Promise<TalkConfig> | null = null
+  const agentCache = new Map<string, TalkConfig | null>()
 
-  async function getBaseConfig(): Promise<SpeakConfig> {
+  async function getBaseConfig(): Promise<TalkConfig> {
     if (baseConfig) return baseConfig
     if (baseLoading && basePromise) {
       return await Promise.race([
         basePromise,
-        new Promise<SpeakConfig>((_, reject) =>
+        new Promise<TalkConfig>((_, reject) =>
           setTimeout(() => reject(new Error("base config load timed out")), CONFIG_LOAD_TIMEOUT_MS),
         ),
       ])
@@ -338,9 +338,9 @@ export function createSpeakConfigResolver(params: CreateResolverParams) {
     return baseConfig
   }
 
-  async function getSpeakConfig(agentName: string): Promise<SpeakConfig | null> {
-    // Skip the speak agent itself to prevent recursion
-    if (agentName === AGENT_NAME_SPEAK) return null
+  async function getTalkConfig(agentName: string): Promise<TalkConfig | null> {
+    // Skip the talk agent itself to prevent recursion
+    if (agentName === AGENT_NAME_TALK) return null
 
     const cached = agentCache.get(agentName)
     if (cached !== undefined) return cached
@@ -349,14 +349,14 @@ export function createSpeakConfigResolver(params: CreateResolverParams) {
       const base = await getBaseConfig()
       const agentOverrides = loadAgentConfig(params.directory, agentName)
 
-      // If agent has no `speak:` section at all, they don't opt in
+      // If agent has no `talk:` section at all, they don't opt in
       if (!agentOverrides) {
         agentCache.set(agentName, null)
         return null
       }
 
       // Merge base with agent overrides
-      const merged = mergeSpeakConfig(base, agentOverrides)
+      const merged = mergeTalkConfig(base, agentOverrides)
 
       // Not enabled → no speaking
       if (!merged.enabled) {
@@ -370,7 +370,7 @@ export function createSpeakConfigResolver(params: CreateResolverParams) {
         params.resolveProvider,
       )
 
-      const resolved: SpeakConfig = { ...merged, voice: resolvedVoice }
+      const resolved: TalkConfig = { ...merged, voice: resolvedVoice }
       agentCache.set(agentName, resolved)
       return resolved
     } catch (err) {
@@ -381,13 +381,13 @@ export function createSpeakConfigResolver(params: CreateResolverParams) {
   }
 
   /**
-   * Returns the base voice config (from speak.md defaults) with
-   * credentials resolved. Used for inline `/speak` commands.
+   * Returns the base voice config (from talk.md defaults) with
+   * credentials resolved. Used for inline `/say` commands.
    */
   async function getVoiceConfig(): Promise<VoiceConfig> {
     const base = await getBaseConfig()
     return resolveVoiceCredentials(base.voice, params.resolveProvider)
   }
 
-  return { getSpeakConfig, getVoiceConfig }
+  return { getTalkConfig, getVoiceConfig }
 }
