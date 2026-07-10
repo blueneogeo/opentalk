@@ -202,6 +202,7 @@ The speak agent (`~/.config/opencode/agents/speak.md`) defines both the summariz
 |-----------------|--------|-------------|-------|
 | `say` | macOS `say` command | None needed | Built-in, always available |
 | `local` | Kokoro server (localhost:8765) | None needed | Requires `build.sh start` |
+| `local-summarize` | Local server LLM → Kokoro pipeline | None needed | Requires server with `--llm-model`. Fastest path — skips cloud subagent and runs LLM summarization + TTS locally in-process |
 | `<provider-id>` | OpenRouter-compatible TTS API | Resolved from `opencode.json` | Model field required |
 
 ### Credential resolution for API providers
@@ -264,6 +265,24 @@ speak:
 ---
 ```
 First run downloads the 86MB ONNX model. Subsequent calls are instant.
+
+**Local LLM + Kokoro (fastest — no cloud, no subagent):**
+```yaml
+---
+speak:
+  enabled: false
+  process: true
+  instruction: Summarize in one conversational sentence
+  voice:
+    provider: local-summarize
+    voice: af_bella
+    speed: 1.0
+    baseUrl: http://127.0.0.1:8765   # optional, this is the default
+---
+```
+The local server runs the LLM for summarization and pipes the result directly to
+Kokoro TTS — no network calls, no subagent round-trips. Start the server with:
+`build.sh start --llm-model mlx-community/Qwen3.5-4B-4bit`
 
 **OpenRouter with provider reference:**
 ```yaml
@@ -331,7 +350,11 @@ opentalk/
 │   │   ├── openrouter.ts        # OpenRouter API engine
 │   │   ├── kokoro.ts            # Local Kokoro engine
 │   │   └── registry.ts          # Engine registry & dispatch (by provider)
-│   └── kokoro-server.py         # Local Kokoro TTS server
+│   ├── kokoro-server.py         # FastAPI TTS + LLM server
+│   ├── llm_engine.py            # LLM loading, prompt building, SSE streaming
+│   ├── state.py                 # Thread-safe runtime state
+│   ├── test_tts.py              # Automated TTS quality test (whisper STT)
+│   └── gemma_test.py            # LLM summarization test script
 ├── agents/speak.md              # Speak agent definition + base defaults
 ├── tests/                       # Unit tests (33 tests)
 ├── build.mjs                    # esbuild bundler (→ single deployable file)

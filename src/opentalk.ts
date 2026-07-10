@@ -8,6 +8,9 @@
  * - enabled: false → no speaking
  */
 import type { Plugin } from "@opencode-ai/plugin"
+import { readFileSync, existsSync } from "node:fs"
+import { join } from "node:path"
+import { homedir } from "node:os"
 import { log } from "./logger"
 import {
   installResponseSuppression,
@@ -17,7 +20,7 @@ import {
 import { createTalkConfigResolver } from "./config"
 import { injectMessage } from "./session"
 import { doSpeak } from "./tts-engines/registry"
-import type { TalkConfig } from "./types"
+import type { TalkConfig, VoiceConfig } from "./types"
 
 const AGENT_NAME = "talk"
 
@@ -121,6 +124,24 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
       const responseText = await getResponseText(client, sessionID, config.source)
       if (!responseText || responseText.startsWith("🔊 ")) return
 
+      // local-summarize: use the local server's LLM → TTS pipeline
+      if (config.voice.provider === "local-summarize") {
+        const systemPrompt = readTalkMdBody(directory)
+        const baseUrl = config.voice.baseUrl || "http://127.0.0.1:8765"
+        const summary = await summarizeViaLocalServer(
+          responseText,
+          config.instruction,
+          systemPrompt,
+          config.voice.voice ?? "af_bella",
+          config.voice.speed ?? 1.0,
+          baseUrl,
+        )
+        if (summary) {
+          await injectMessage(client, sessionID, `🔊 ${summary}`)
+        }
+        return
+      }
+
       // summarize: false — speak the raw response directly
       if (!config.summarize) {
         const truncated = responseText.length > 1000
@@ -174,6 +195,99 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
         }
       }
     },
+  }
+}
+
+/** Reads the body of talk.md (everything after the YAML frontmatter). */
+function readTalkMdBody(directory: string): string {
+  const paths = [
+    join(directory, ".opencode", "agents", "talk.md"),
+    join(directory, "agents", "talk.md"),
+    join(homedir(), ".config", "opencode", "agents", "talk.md"),
+  ]
+  for (const p of paths) {
+    try {
+      if (!existsSync(p)) continue
+      const content = readFileSync(p, "utf-8")
+      const m = content.match(/^---\n[\s\S]*?\n---\n?([\s\S]*)$/)
+      if (m?.[1]?.trim()) return m[1].trim()
+    } catch { /* skip unreadable files */ }
+  }
+  console.warn("[OpenTalk] talk.md body not found — local-summarize won't work")
+  return ""
+}
+
+/**
+ * Sends a summarization request to the local server, which runs the LLM
+ * and pipes the result to kokoro TTS. Returns the spoken summary text.
+ */
+async function summarizeViaLocalServer(
+  responseText: string,
+  instruction: string,
+  systemPrompt: string,
+  voice: string,
+  speed: number,
+  baseUrl: string,
+): Promise<string | null> {
+  try {
+    const res = await fetch(`${baseUrl}/summarize`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: `Instruction: ${instruction}\n\nAssistant response to summarize:\n${responseText}` },
+        ],
+        stream: true,
+        speak: true,
+        voice,
+        speed,
+        temperature: 0.1,
+        max_tokens: 80,
+      }),
+    })
+
+    if (!res.ok) {
+      console.error(`[OpenTalk] local server returned ${res.status}: ${await res.text().catch(() => "")}`)
+      return null
+    }
+
+    if (!res.body) {
+      console.error("[OpenTalk] local server: no response body")
+      return null
+    }
+
+    // Parse SSE stream
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let fullText = ""
+    let leftover = ""
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      const chunk = decoder.decode(value, { stream: true })
+      leftover += chunk
+      const lines = leftover.split("\n")
+      leftover = lines.pop() ?? ""
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue
+        const data = line.slice(6)
+        if (data === "[DONE]") continue
+        try {
+          const parsed = JSON.parse(data)
+          const content = parsed?.choices?.[0]?.delta?.content
+          if (content) fullText += content
+        } catch { /* skip malformed lines */ }
+      }
+    }
+
+    return fullText.trim() || null
+  } catch (err) {
+    console.error("[OpenTalk] local server request failed:", err)
+    return null
   }
 }
 

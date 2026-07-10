@@ -11,7 +11,7 @@ talk:
   model: opencode-go/deepseek-v4-flash
 
   voice:
-    provider: local
+    provider: local-summarize
     voice: af_bella
     speed: 1.0
 ---
