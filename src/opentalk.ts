@@ -1,9 +1,11 @@
 /**
  * OpenTalk — OpenCode plugin that speaks short summaries when agents finish.
  *
- * On session.idle, reads the agent's `speak:` directive:
- * - speak: true → speaks the full response directly
- * - speak: "..." → spawns the speak subagent to summarize, then speaks the result
+ * On session.idle, reads the agent's resolved `speak:` config (base defaults
+ * from speak.md deep-merged with per-agent overrides):
+ * - process: true  → spawns the speak subagent to summarize, then speaks
+ * - process: false → speaks the raw response text directly
+ * - enabled: false → no speaking
  */
 import type { Plugin } from "@opencode-ai/plugin"
 import { log } from "./logger"
@@ -12,11 +14,10 @@ import {
   uninstallResponseSuppression,
   activateSuppression,
 } from "./response-suppression"
-import { createConfigLoader } from "./config"
-import { createDirectiveResolver } from "./directive"
+import { createSpeakConfigResolver } from "./config"
 import { injectMessage } from "./session"
 import { doSpeak } from "./tts-engines/registry"
-import type { SpeakDirective } from "./types"
+import type { SpeakConfig } from "./types"
 
 const AGENT_NAME = "speak"
 
@@ -31,7 +32,7 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
   log("Plugin loaded")
   installResponseSuppression()
 
-  const getTtsConfig = createConfigLoader({
+  const { getSpeakConfig, getVoiceConfig } = createSpeakConfigResolver({
     directory,
     async resolveProvider(providerId) {
       try {
@@ -54,8 +55,6 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
       }
     },
   })
-
-  const { getSpeakDirective } = createDirectiveResolver(directory)
 
   let speakEnabled = true
   const sessionAgent = new Map<string, string>()
@@ -98,8 +97,8 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
       if (fullText.startsWith("/speak ")) {
         const text = fullText.slice("/speak ".length).trim()
         if (text) {
-          const cfg = await getTtsConfig()
-          doSpeak(text, cfg)
+          const voiceCfg = await getVoiceConfig()
+          doSpeak(text, voiceCfg)
           await injectMessage(client, input.sessionID, `🔊 ${text}`)
         }
         activateSuppression()
@@ -115,26 +114,25 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
       const agentName = sessionAgent.get(sessionID)
       if (!agentName || agentName === AGENT_NAME) return
 
-      const directive = getSpeakDirective(agentName)
-      if (!directive) return
+      const config = await getSpeakConfig(agentName)
+      if (!config) return
 
       // Extract the assistant's response text
       const responseText = await getResponseText(client, sessionID)
       if (!responseText || responseText.startsWith("🔊 ")) return
 
-      // speak: true — speak the full response directly
-      if (directive.type === "full") {
+      // process: false — speak the raw response directly
+      if (!config.process) {
         const truncated = responseText.length > 1000
           ? responseText.slice(0, 997) + "..."
           : responseText
-        const cfg = await getTtsConfig()
-        await doSpeak(truncated, cfg)
+        await doSpeak(truncated, config.voice)
         await injectMessage(client, sessionID, `🔊 ${truncated}`)
         return
       }
 
-      // speak: "instruction" — summarize via subagent
-      const instruction = directive.value
+      // process: true — summarize via subagent
+      const instruction = config.instruction
       let ttsSessionId: string | undefined
 
       try {
@@ -165,8 +163,7 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
           .join(" ").trim()
 
         if (spoken) {
-          const cfg = await getTtsConfig()
-          await doSpeak(spoken, cfg)
+          await doSpeak(spoken, config.voice)
           await injectMessage(client, sessionID, `🔊 ${spoken}`)
         }
       } catch (err) {

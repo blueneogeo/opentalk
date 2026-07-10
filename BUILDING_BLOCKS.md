@@ -134,7 +134,7 @@ Used to get the assistant's final response when session goes idle.
 Promise<{ info: AssistantMessage; parts: Part[] }>
 ```
 
-Used to send the tts prompt + full response to the TTS agent.
+Used to send the speak prompt + full response to the speak agent.
 
 ---
 
@@ -237,63 +237,152 @@ Agent markdown files live at:
 - Project: `{directory}/.opencode/agents/{name}.md`
 - Project (legacy): `{directory}/agents/{name}.md`
 
-### Parsing a `speak` property from agent frontmatter
+### Parsing the `speak:` block from frontmatter
 
-```typescript
-const content = await Bun.file(agentPath).text()
-const match = content.match(/^speak:\s*(.*)$/m)
-if (match) return match[1].trim()
-return null
+The `speak:` section uses a nested YAML structure. `parseSpeakBlock()` in `config.ts` parses it:
+
+```
+speak:
+  enabled: true              # boolean
+  process: true              # boolean — summarization mode
+  instruction: "Summarize"   # string — prompt for speak subagent
+  model: opencode-go/...     # string — LLM model for summarization
+  voice:                     # sub-block — TTS settings
+    provider: local          # "say" | "local" | provider-id
+    model: hexgrad/...       # optional — TTS model (API providers only)
+    voice: af_bella          # voice identifier
+    speed: 1.0               # playback speed
+    response_format: mp3     # audio format
 ```
 
-Regex `/^speak:\s*(.*)$/m` — only matches `speak:` at start of line. Does NOT match indented or commented lines.
+The parser:
+1. Finds the `speak:` line at indent level 0
+2. Reads indented keys (`enabled:`, `process:`, `instruction:`, `model:`)
+3. When it hits `voice:`, enters a sub-block and reads keys at the next indent level
+4. Exits the voice sub-block when indent returns to speak level
+5. Exits the speak block when indent returns to 0
 
-**Tested and verified** against all agent files on this system.
+### Example base config in `speak.md`:
 
-### Example agent with `tts`
-
-```markdown
+```yaml
 ---
-description: Primary chat agent
+mode: subagent
+hidden: true
+temperature: 0.1
+
+speak:
+  enabled: false
+  process: true
+  instruction: Summarize in one conversational sentence
+  model: opencode-go/deepseek-v4-flash
+  voice:
+    provider: local
+    voice: af_bella
+    speed: 1.0
+---
+You are the assistant's voice...
+```
+
+### Example agent override:
+
+```yaml
+---
 mode: primary
-tts: Summarize what you just did in one conversational sentence
+speak:
+  enabled: true
 ---
-You are a helpful chat agent...
 ```
 
+The agent inherits all defaults from `speak.md` — it just opts in. To customize:
+
+```yaml
+---
+mode: primary
+speak:
+  enabled: true
+  instruction: Tell me what you just did in pirate speak
+  voice:
+    provider: say
+---
+```
+
+### Config resolution flow:
+
+1. `parseSpeakBlock(frontmatter)` → `ParsedSpeakBlock` (raw strings)
+2. `toSpeakConfig(raw)` → `DeepPartial<SpeakConfig>` (typed, partial)
+3. `mergeSpeakConfig(base, agent)` → `SpeakConfig` (resolved, all fields filled)
+4. `resolveVoiceCredentials(voice)` → `VoiceConfig` (with API keys resolved, or fallback to `say`)
+
+### Deep merge:
+
+- Agent fields override base fields (nullish coalescing)
+- Voice sub-fields also merge independently — e.g., overriding `voice.speed` doesn't lose `voice.provider`
+
 ---
 
-## 8. TTS Engine (macOS `say`)
+## 8. Voice Engines
 
-### Basic usage from Bun
+### Engine dispatch (by `provider`)
+
+```
+voice.provider
+  "say"     → sayEngine      (macOS `say` command)
+  "local"   → kokoroEngine   (localhost:8765 HTTP server)
+  <other>   → openrouterEngine (resolves via OpenCode providers, /v1/audio/speech)
+```
+
+### VoiceConfig type
 
 ```typescript
-// Fire-and-forget (non-blocking)
-Bun.spawn(["say", "-v", "Samantha", text])
-
-// Via stdin (for long text, avoids arg length limits)
-const proc = Bun.spawn(["say", "-v", "Samantha"], { stdin: "pipe" })
-proc.stdin.write(text)
-proc.stdin.end()
-
-// With custom rate (words per minute, default ~180)
-Bun.spawn(["say", "-v", "Samantha", "-r", "200", text])
+interface VoiceConfig {
+  provider: string
+  model?: string
+  voice?: string
+  speed?: number
+  responseFormat?: "mp3" | "pcm"
+  apiKey?: string
+  baseUrl?: string
+}
 ```
 
-### Features
-
-- Graceful fallback — if voice not found, `say` uses system default (exit 0)
-- Supports `--input-file=file` and stdin piping
-- Supports rate control (`-r`)
-- Available voices: `say -v "?"` lists all (Samantha is a good default for English)
-- Special chars (quotes, em-dashes, apostrophes) work fine
-
-### Abort/cancel
+### Say engine (macOS built-in)
 
 ```typescript
-const proc = Bun.spawn(["say", ...])
-proc.kill()  // stop speaking immediately
+const voice = config.voice || "Samantha"
+const rate = Math.round((config.speed ?? 1.0) * 200).toString()
+Bun.spawn(["say", "-v", voice, "-r", rate, text])
 ```
+
+**Features**: Graceful fallback (if voice not found, uses system default). No API key needed. Supports rate control via `-r`. Available voices: `say -v "?"`.
+
+### Kokoro engine (local server)
+
+```typescript
+fetch("http://127.0.0.1:8765/speak", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ text, voice: config.voice || "af_bella" }),
+})
+```
+
+Requires the local Python server running (`build.sh start`). No API key needed. Voice parameter supported; speed is not.
+
+### OpenRouter engine (API)
+
+```typescript
+fetch(`${baseUrl ?? "https://openrouter.ai/api/v1"}/audio/speech`, {
+  method: "POST",
+  headers: {
+    Authorization: `Bearer ${apiKey}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+    model, input: text, voice, speed, response_format: responseFormat,
+  }),
+})
+```
+
+Downloads MP3 audio, plays via `afplay`, cleans up temp file. Credentials resolved from OpenCode provider config or `$OPENROUTER_API_KEY`.
 
 ---
 
@@ -303,8 +392,16 @@ proc.kill()  // stop speaking immediately
 // Track which agent is active for each session
 const sessionAgentMap = new Map<string, string>()
 
-// Cache of speak directives per agent (read once on idle, cached)
-const speakDirectiveCache = new Map<string, SpeakDirective | null>()
+// Speak config resolver (base + agent merge, cached per agent)
+const { getSpeakConfig, getVoiceConfig } = createSpeakConfigResolver({
+  directory,
+  resolveProvider: async (providerId) => {
+    // Look up in OpenCode provider registry
+    const providers = await client.config.providers()
+    const provider = providers.data.providers.find(p => p.id === providerId)
+    return provider ? { baseUrl: provider.options.baseURL, apiKey: provider.key } : null
+  }
+})
 
 return {
   "chat.message": async (input, output) => {
@@ -312,6 +409,7 @@ return {
     if (input.agent) {
       sessionAgentMap.set(input.sessionID, input.agent)
     }
+    // Handle /set-speak on|off and /speak <text> commands
   },
 
   event: async ({ event }) => {
@@ -321,48 +419,50 @@ return {
     const agentName = sessionAgentMap.get(sessionID)
     if (!agentName) return
 
-    // 1. Get speak directive for this agent (with caching)
-    let directive = speakDirectiveCache.get(agentName)
-    if (directive === undefined) {
-      directive = getSpeakDirective(agentName)
-      speakDirectiveCache.set(agentName, directive)
-    }
-    if (!directive) return
+    // 1. Resolve speak config for this agent (base + agent merge, cached)
+    const config = await getSpeakConfig(agentName)
+    if (!config || !config.enabled) return
 
-    // 2. Get the session's messages
+    // 2. Get the session's messages and extract assistant text
     const msgs = await client.session.messages({ path: { id: sessionID } })
-    
-    // 3. Extract assistant's text response
     const assistantMsgs = msgs.data.filter(m => m.info.role === "assistant")
-    const lastAssistant = assistantMsgs[assistantMsgs.length - 1]
-    const responseText = lastAssistant.parts
+    const responseText = assistantMsgs[assistantMsgs.length - 1].parts
       .filter(p => p.type === "text")
-      .map(p => (p as TextPart).text)
-      .join("\n")
-    if (!responseText) return
+      .map(p => p.text).join("\n")
 
-    // 4. Create/get TTS session and send prompt
+    // 3. Mode: process determines summarization vs raw
+    if (!config.process) {
+      // Raw passthrough — speak the response directly
+      doSpeak(responseText, config.voice)
+      await injectMessage(spokenText)
+      return
+    }
+
+    // 4. Summarization mode — spawn speak subagent
     const ttsSession = await client.session.create({ body: { title: "OpenTalk" } })
-    const ttsResponse = await client.session.prompt({
+    const ttsResult = await client.session.prompt({
       path: { id: ttsSession.data.id },
       body: {
         agent: "speak",
-        parts: [
-          { type: "text", text: `Instruction: ${tts}\n\nResponse to summarize:\n${responseText}` }
-        ]
-      }
+        parts: [{
+          type: "text",
+          text: `Instruction: ${config.instruction}\n\nAssistant response to summarize:\n${responseText}`,
+        }],
+      },
     })
 
-    // 5. Extract TTS agent's spoken summary
-    const spokenText = ttsResponse.data.parts
+    // 5. Extract spoken summary and play it
+    const spokenText = ttsResult.data.parts
       .filter(p => p.type === "text")
-      .map(p => (p as TextPart).text)
-      .join("\n")
+      .map(p => p.text).join(" ").trim()
 
-    // 6. Speak it (fire-and-forget)
     if (spokenText) {
-      Bun.spawn(["say", "-v", "Samantha", spokenText])
+      doSpeak(spokenText, config.voice)
+      await injectMessage(spokenText)
     }
+
+    // 6. Cleanup
+    await client.session.delete({ path: { id: ttsSession.data.id } })
   }
 }
 ```
@@ -372,9 +472,12 @@ return {
 | Decision | Reason |
 |----------|--------|
 | Track agent via `chat.message` hook + Map | `session.idle` event doesn't carry agent info; `UserMessage.agent` does |
-| Cache `speak` directives per agent | Don't read the file on every idle event |
-| Create a new TTS session per summary | Clean isolation; no stale context |
-| `Bun.spawn` for TTS (fire-and-forget) | Non-blocking, don't wait for speech to finish |
+| Base defaults + per-agent overrides | `speak.md` sets global defaults; agents individually opt in and customize |
+| Deep merge (field-level) | Voice fields merge independently — override `voice` without losing `provider` |
+| Cache resolved config per agent | Don't re-parse/merge on every idle event |
+| `process` boolean controls mode | `true` = subagent summarize, `false` = raw. Config-driven, not code-driven |
+| Create a new speak session per summary | Clean isolation; no stale context |
+| Fire-and-forget for TTS | Non-blocking, don't wait for speech to finish |
 | `client` comes from `PluginInput` | Plugin already has a connected client; no need to create a new one |
 | Filter `parts` for `type === "text"` | Assistant messages have many part types (tool, step-start, etc.) |
 
@@ -382,11 +485,13 @@ return {
 
 | Case | Handling |
 |------|----------|
-| Agent has no `speak` property | Skip silently |
-| Agent file doesn't exist | Return null, cache, skip |
-| TTS agent doesn't exist | Log warning at startup, skip all TTS |
+| Agent has no `speak` section | Silent — no speaking for this agent |
+| Agent has `speak.enabled: false` | Silent — explicit opt-out |
+| `speak.md` not found | Hardcoded defaults (say, noop instruction) |
+| Voice provider not found | Falls back to `say` |
+| TTS agent doesn't exist | Log warning, skip |
 | `say` command fails | Fire-and-forget, no crash |
 | Assistant response is empty | Skip (return early after checking) |
 | Subagent sessions (agent is undefined) | Skip in `chat.message` hook |
-| Long response text | `say` handles arbitrary length; use stdin if needed |
-| User interrupts speech | `proc.kill()` on the spawned process |
+| Long response text | Truncated to 1000 chars in raw mode; speak subagent handles summarization |
+| Speak agent recursion | Speak agent name is hard-coded and skipped |

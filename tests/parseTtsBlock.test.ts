@@ -1,89 +1,167 @@
 import { describe, it, expect } from "vitest"
-import { parseTtsBlock } from "../src/config"
+import { parseSpeakBlock } from "../src/config"
 
-describe("parseTtsBlock", () => {
-  it("parses a simple tts block", () => {
-    const input = `description: something
-tts:
-  engine: kokoro
-  voice: af_bella
+describe("parseSpeakBlock", () => {
+  it("parses a simple speak block", () => {
+    const input = `mode: primary
+speak:
+  enabled: true
+  process: false
+  instruction: Custom instruction
+  model: custom-model
 `
-    const result = parseTtsBlock(input)
-    expect(result).toEqual({ engine: "kokoro", voice: "af_bella" })
-  })
-
-  it("returns null when no tts block is present", () => {
-    const input = `description: something
-mode: subagent
-`
-    expect(parseTtsBlock(input)).toBeNull()
-  })
-
-  it("stops parsing at the next top-level key", () => {
-    const input = `tts:
-  engine: kokoro
-next_key: value
-  voice: af_bella
-`
-    const result = parseTtsBlock(input)
-    expect(result).toEqual({ engine: "kokoro" })
-  })
-
-  it("ignores comments", () => {
-    const input = `tts:
-  # this is a comment
-  engine: say
-  # another comment
-  voice: Samantha
-`
-    const result = parseTtsBlock(input)
-    expect(result).toEqual({ engine: "say", voice: "Samantha" })
-  })
-
-  it("ignores empty lines", () => {
-    const input = `tts:
-
-  engine: kokoro
-
-  voice: af_bella
-
-`
-    const result = parseTtsBlock(input)
-    expect(result).toEqual({ engine: "kokoro", voice: "af_bella" })
-  })
-
-  it("handles keys with underscores", () => {
-    const input = `tts:
-  api_provider: openrouter
-  response_format: mp3
-  base_url: https://example.com
-`
-    const result = parseTtsBlock(input)
+    const result = parseSpeakBlock(input)
     expect(result).toEqual({
-      api_provider: "openrouter",
-      response_format: "mp3",
-      base_url: "https://example.com",
+      enabled: "true",
+      process: "false",
+      instruction: "Custom instruction",
+      model: "custom-model",
     })
   })
 
-  it("handles values with colons (URLs)", () => {
-    const input = `tts:
-  base_url: https://openrouter.ai/api/v1
+  it("returns null when no speak block is present", () => {
+    const input = `description: something
+mode: subagent
 `
-    const result = parseTtsBlock(input)
-    expect(result).toEqual({ base_url: "https://openrouter.ai/api/v1" })
+    expect(parseSpeakBlock(input)).toBeNull()
   })
 
-  it("returns null for empty tts block", () => {
-    const input = `tts:
-  # only comments
+  it("returns null for empty speak block", () => {
+    const input = `
+speak:
+  # only a comment
+next: thing
 `
-    expect(parseTtsBlock(input)).toBeNull()
+    expect(parseSpeakBlock(input)).toBeNull()
+  })
+
+  it("parses a speak block with voice sub-block", () => {
+    const input = `speak:
+  enabled: true
+  voice:
+    provider: openrouter
+    model: hexgrad/kokoro-82m
+    voice: af_bella
+    speed: 1.5
+    response_format: pcm
+`
+    const result = parseSpeakBlock(input)
+    expect(result).toEqual({
+      enabled: "true",
+      voice: {
+        provider: "openrouter",
+        model: "hexgrad/kokoro-82m",
+        voice: "af_bella",
+        speed: "1.5",
+        response_format: "pcm",
+      },
+    })
+  })
+
+  it("parses a speak block with only voice (agent override)", () => {
+    const input = `speak:
+  enabled: true
+  voice:
+    provider: say
+`
+    const result = parseSpeakBlock(input)
+    expect(result).toEqual({
+      enabled: "true",
+      voice: { provider: "say" },
+    })
+  })
+
+  it("stops parsing at the next top-level key", () => {
+    const input = `speak:
+  enabled: true
+  process: false
+next_key: value
+  should_be_ignored: yes
+`
+    const result = parseSpeakBlock(input)
+    expect(result).toEqual({ enabled: "true", process: "false" })
+  })
+
+  it("ignores comments", () => {
+    const input = `speak:
+  # this is a comment
+  enabled: true
+  # another comment
+  process: false
+`
+    const result = parseSpeakBlock(input)
+    expect(result).toEqual({ enabled: "true", process: "false" })
+  })
+
+  it("ignores empty lines", () => {
+    const input = `speak:
+
+  enabled: true
+
+  process: false
+
+`
+    const result = parseSpeakBlock(input)
+    expect(result).toEqual({ enabled: "true", process: "false" })
+  })
+
+  it("handles keys with underscores in voice block", () => {
+    const input = `speak:
+  voice:
+    api_provider: openrouter
+    response_format: mp3
+    base_url: https://example.com
+`
+    const result = parseSpeakBlock(input)
+    expect(result).toEqual({
+      voice: {
+        api_provider: "openrouter",
+        response_format: "mp3",
+        base_url: "https://example.com",
+      },
+    })
+  })
+
+  it("handles values with colons in voice block (URLs)", () => {
+    const input = `speak:
+  voice:
+    base_url: https://openrouter.ai/api/v1
+`
+    const result = parseSpeakBlock(input)
+    expect(result).toEqual({
+      voice: { base_url: "https://openrouter.ai/api/v1" },
+    })
   })
 
   it("handles tab indentation", () => {
-    const input = "tts:\n\tengine: kokoro\n\tvoice: af_bella"
-    const result = parseTtsBlock(input)
-    expect(result).toEqual({ engine: "kokoro", voice: "af_bella" })
+    const input = "speak:\n\tenabled: true\n\tvoice:\n\t\tprovider: say"
+    const result = parseSpeakBlock(input)
+    expect(result).toEqual({
+      enabled: "true",
+      voice: { provider: "say" },
+    })
+  })
+
+  it("voice block between speak keys", () => {
+    const input = `speak:
+  enabled: true
+  voice:
+    provider: say
+  process: false
+`
+    const result = parseSpeakBlock(input)
+    expect(result).toEqual({
+      enabled: "true",
+      process: "false",
+      voice: { provider: "say" },
+    })
+  })
+
+  it("only-enabled override", () => {
+    const input = `speak:
+  enabled: true
+`
+    const result = parseSpeakBlock(input)
+    expect(result).toEqual({ enabled: "true" })
   })
 })

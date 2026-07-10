@@ -116,7 +116,7 @@ install() {
   echo "OpenTalk installed."
   echo ""
   echo "TTS engines: say (macOS) | kokoro (MLX, local GPU) | openrouter (API)"
-  echo "Add 'speak: true' or 'speak: \"...\"' to any agent .md file."
+  echo "Add 'speak: { enabled: true }' to any agent .md file to enable."
   echo ""
   echo "Server management:"
   echo "  build.sh start    — launch the TTS server"

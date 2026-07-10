@@ -1,9 +1,9 @@
 /**
  * TTS engine registry and dispatcher.
- * Maps engine names to engine instances and provides a single `doSpeak()` entry point.
+ * Maps provider names to engine instances and provides a single `doSpeak()` entry point.
  */
 import type { TtsEngine } from "./types"
-import type { TtsConfig } from "../types"
+import type { VoiceConfig } from "../types"
 import { sayEngine } from "./say"
 import { openrouterEngine } from "./openrouter"
 import { kokoroEngine } from "./kokoro"
@@ -29,19 +29,32 @@ export function registerEngine(engine: TtsEngine): void {
   engines.set(engine.name, engine)
 }
 
-/** Produce spoken audio for the given text using the configured engine. */
+/**
+ * Maps a voice config provider to the internally registered engine name.
+ * - "say"       → sayEngine
+ * - "local"     → kokoroEngine (local server on localhost:8765)
+ * - other       → openrouterEngine (cloud provider with API credentials)
+ */
+function engineNameForProvider(provider: string): string {
+  if (provider === "say") return "say"
+  if (provider === "local") return "kokoro"
+  return "openrouter"
+}
+
+/** Produce spoken audio for the given text using the configured voice provider. */
 export async function doSpeak(
   text: string,
-  config: TtsConfig,
+  config: VoiceConfig,
 ): Promise<void> {
   if (!text.trim()) return
 
   ensureRegistered()
 
-  const engine = engines.get(config.engine) ?? engines.get("say")
+  const engineName = engineNameForProvider(config.provider)
+  const engine = engines.get(engineName) ?? engines.get("say")
 
   if (!engine) {
-    console.error(`[OpenTalk] no TTS engine found for "${config.engine}"`)
+    console.error(`[OpenTalk] no TTS engine found for provider "${config.provider}"`)
     return
   }
 

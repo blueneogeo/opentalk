@@ -3,14 +3,14 @@
  * Uses the built-in `say` command — no network, no API key required.
  */
 import type { TtsEngine } from "./types"
-import type { TtsConfig } from "../types"
+import type { VoiceConfig } from "../types"
 
 export const sayEngine: TtsEngine = {
   name: "say",
 
-  async speak(text: string, config: TtsConfig): Promise<void> {
+  async speak(text: string, config: VoiceConfig): Promise<void> {
     const voice = config.voice || "Samantha"
-    const rate = Math.round(config.speed * 200).toString()
+    const rate = Math.round((config.speed ?? 1.0) * 200).toString()
     const args = ["-v", voice, "-r", rate, text]
 
     try {

@@ -7,7 +7,7 @@ import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { writeFileSync, unlinkSync } from "node:fs"
 import type { TtsEngine } from "./types"
-import type { TtsConfig } from "../types"
+import type { VoiceConfig } from "../types"
 
 async function playAndCleanup(filePath: string): Promise<void> {
   try {
@@ -32,7 +32,7 @@ async function playAndCleanup(filePath: string): Promise<void> {
 export const openrouterEngine: TtsEngine = {
   name: "openrouter",
 
-  async speak(text: string, config: TtsConfig): Promise<void> {
+  async speak(text: string, config: VoiceConfig): Promise<void> {
     const { apiKey, baseUrl, model, voice, speed, responseFormat } = config
     const url = `${baseUrl ?? "https://openrouter.ai/api/v1"}/audio/speech`
 
