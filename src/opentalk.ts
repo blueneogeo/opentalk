@@ -129,14 +129,6 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
 
       // speak: "instruction" — summarize via subagent
       const instruction = directive.value
-      const cfg = await getTtsConfig()
-      const useParagraph = cfg.summarize !== "message"
-      const inputText = useParagraph
-        ? lastParagraph(responseText)
-        : responseText
-      const promptText = useParagraph
-        ? `Paragraph:\n${inputText}\n\nRewrite in first person, under 10 words. ${instruction}`
-        : `Instruction: ${instruction}\n\nAssistant response to summarize:\n${inputText}`
       let ttsSessionId: string | undefined
 
       try {
@@ -154,7 +146,7 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
             agent: AGENT_NAME,
             parts: [{
               type: "text",
-              text: promptText,
+              text: `Instruction: ${instruction}\n\nAssistant response to summarize:\n${responseText}`,
             }],
           },
         })
@@ -180,12 +172,6 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
       }
     },
   }
-}
-
-/** Returns the last paragraph of a text (split on double newline). */
-function lastParagraph(text: string): string {
-  const paragraphs = text.split(/\n\n+/)
-  return paragraphs[paragraphs.length - 1].trim()
 }
 
 /** Extracts the last assistant's text content from a session. */

@@ -180,6 +180,13 @@ start() {
   for i in $(seq 1 60); do
     if curl -s "http://127.0.0.1:$PORT/health" > /dev/null 2>&1; then
       _ok "Server ready (PID $(cat "$PID_FILE"))"
+      # Check for accessibility permission issues
+      sleep 1
+      if grep -q "not trusted" "$LOG_FILE" 2>/dev/null; then
+        _warn "Escape-key interrupt won't work — grant Accessibility permission"
+        echo "  System Settings > Privacy & Security > Accessibility"
+        echo "  Add your terminal app, then restart: build.sh stop && build.sh start"
+      fi
       return 0
     fi
     sleep 0.5

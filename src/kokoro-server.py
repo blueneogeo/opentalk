@@ -2,9 +2,9 @@
 """
 Kokoro TTS Server — streaming text-to-speech with MLX on Apple Silicon.
 kokoro-mlx handles audio playback internally via sounddevice.
-Escape key interrupts playback globally (opt-in via --keyboard-interrupt).
+Escape key interrupts playback (requires macOS Accessibility permission).
 
-Usage:  uv run kokoro-server.py [--port 8765] [--keyboard-interrupt]
+Usage:  uv run kokoro-server.py [--port 8765]
 Test:   curl http://127.0.0.1:8765/health
 Speak:  curl -X POST :8765/speak -H "Content-Type: application/json" -d '{"text":"hello","voice":"af_bella"}'
 Status: curl http://127.0.0.1:8765/status
@@ -87,7 +87,6 @@ class ServerState:
 
 
 _state = ServerState()
-_keyboard_enabled = False
 
 
 def stop():
@@ -100,20 +99,34 @@ def stop():
 
 
 def _start_listener():
-    """Start the global keyboard listener on first speak call."""
+    """Start the global keyboard listener. On success, Escape interrupts speech.
+    On macOS this requires Accessibility permission for the terminal/Python."""
     if _state.listener is not None:
-        return
-    if not _keyboard_enabled:
         return
 
     def on_press(key):
         if key == _keyboard.Key.esc:
+            print("[info] escape pressed — stopping speech", flush=True)
             stop()
 
-    lst = _Listener(on_press=on_press)
-    lst.daemon = True
-    lst.start()
-    _state.listener = lst
+    try:
+        lst = _Listener(on_press=on_press)
+        lst.daemon = True
+        lst.start()
+        _state.listener = lst
+        print("[info] escape-key listener active", flush=True)
+        print(
+            "[info] if Escape does not interrupt speech, grant Accessibility "
+            "permission in System Settings > Privacy & Security > Accessibility",
+            flush=True,
+        )
+    except Exception as e:
+        print("[warn] cannot start escape-key listener: %s" % e, file=sys.stderr, flush=True)
+        print(
+            "[warn] grant Accessibility permission in "
+            "System Settings > Privacy & Security > Accessibility",
+            file=sys.stderr, flush=True,
+        )
 
 
 def speak_async(text: str, voice: str = "af_bella", speed: float = 1.0) -> None:
@@ -130,7 +143,6 @@ def speak_async(text: str, voice: str = "af_bella", speed: float = 1.0) -> None:
     _state.set_stop_event(stop_evt)
     _state.set_playing(True)
     _state.set_text(text)
-    _start_listener()
 
     def _run():
         try:
@@ -231,19 +243,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    global _keyboard_enabled
-
     p = argparse.ArgumentParser()
     p.add_argument("--port", type=int, default=8765)
-    p.add_argument(
-        "--keyboard-interrupt",
-        action="store_true",
-        dest="keyboard_interrupt",
-        help="Enable global escape-key listener to interrupt speech",
-    )
     args = p.parse_args()
-
-    _keyboard_enabled = args.keyboard_interrupt
 
     print("Loading deps...")
     _load_deps()
@@ -254,6 +256,8 @@ def main():
         print(f"[fatal] model loading failed: {e}", file=sys.stderr)
         sys.exit(1)
     print("Model loaded.")
+
+    _start_listener()
 
     srv = HTTPServer(("127.0.0.1", args.port), Handler)
     print(f"Server: http://127.0.0.1:{args.port}")
