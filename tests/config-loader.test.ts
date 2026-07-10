@@ -26,7 +26,7 @@ temperature: 0.1
 
 talk:
   enabled: false
-  process: true
+  summarize: true
   instruction: Summarize in one conversational sentence, under 25 words
   model: opencode-go/deepseek-v4-flash
   voice:
@@ -108,7 +108,7 @@ talk:
     const config = await getTalkConfig("test-agent")
     expect(config).not.toBeNull()
     expect(config!.enabled).toBe(true)
-    expect(config!.process).toBe(true)
+    expect(config!.summarize).toBe(true)
     expect(config!.instruction).toBe("Summarize in one conversational sentence, under 25 words")
     expect(config!.model).toBe("opencode-go/deepseek-v4-flash")
     expect(config!.voice.provider).toBe("say")
@@ -134,17 +134,17 @@ talk:
     const config = await getTalkConfig("test-agent")
     expect(config!.instruction).toBe("Talk like a pirate, arr!")
     // Other fields still from base
-    expect(config!.process).toBe(true)
+    expect(config!.summarize).toBe(true)
   })
 
-  it("agent can set process: false for raw passthrough", async () => {
+  it("agent can set summarize: false for raw passthrough", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true)
     vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
       if (String(p).includes("talk.md")) return BASE_SPEAK_MD
       return talkMd(`mode: primary
 talk:
   enabled: true
-  process: false
+  summarize: false
 `)
     })
 
@@ -155,7 +155,7 @@ talk:
 
     const config = await getTalkConfig("test-agent")
     expect(config!.enabled).toBe(true)
-    expect(config!.process).toBe(false)
+    expect(config!.summarize).toBe(false)
   })
 
   it("agent can override voice provider", async () => {

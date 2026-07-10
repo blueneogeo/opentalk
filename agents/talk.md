@@ -5,7 +5,8 @@ temperature: 0.1
 
 talk:
   enabled: false
-  process: true
+  summarize: true
+  source: last-message
   instruction: Summarize in one conversational sentence, under 25 words
   model: opencode-go/deepseek-v4-flash
 

@@ -6,14 +6,14 @@ describe("parseTalkBlock", () => {
     const input = `mode: primary
 talk:
   enabled: true
-  process: false
+  summarize: false
   instruction: Custom instruction
   model: custom-model
 `
     const result = parseTalkBlock(input)
     expect(result).toEqual({
       enabled: "true",
-      process: "false",
+      summarize: "false",
       instruction: "Custom instruction",
       model: "custom-model",
     })
@@ -74,12 +74,12 @@ next: thing
   it("stops parsing at the next top-level key", () => {
     const input = `talk:
   enabled: true
-  process: false
+  summarize: false
 next_key: value
   should_be_ignored: yes
 `
     const result = parseTalkBlock(input)
-    expect(result).toEqual({ enabled: "true", process: "false" })
+    expect(result).toEqual({ enabled: "true", summarize: "false" })
   })
 
   it("ignores comments", () => {
@@ -87,10 +87,10 @@ next_key: value
   # this is a comment
   enabled: true
   # another comment
-  process: false
+  summarize: false
 `
     const result = parseTalkBlock(input)
-    expect(result).toEqual({ enabled: "true", process: "false" })
+    expect(result).toEqual({ enabled: "true", summarize: "false" })
   })
 
   it("ignores empty lines", () => {
@@ -98,11 +98,11 @@ next_key: value
 
   enabled: true
 
-  process: false
+  summarize: false
 
 `
     const result = parseTalkBlock(input)
-    expect(result).toEqual({ enabled: "true", process: "false" })
+    expect(result).toEqual({ enabled: "true", summarize: "false" })
   })
 
   it("handles keys with underscores in voice block", () => {
@@ -147,12 +147,12 @@ next_key: value
   enabled: true
   voice:
     provider: say
-  process: false
+  summarize: false
 `
     const result = parseTalkBlock(input)
     expect(result).toEqual({
       enabled: "true",
-      process: "false",
+      summarize: "false",
       voice: { provider: "say" },
     })
   })

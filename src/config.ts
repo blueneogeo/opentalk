@@ -16,7 +16,8 @@ const AGENT_NAME_TALK = "talk"
 
 const HARD_DEFAULTS: TalkConfig = {
   enabled: false,
-  process: true,
+  summarize: true,
+  source: "last-message",
   instruction: "Summarize in one conversational sentence, under 25 words",
   model: "opencode-go/deepseek-v4-flash",
   voice: {
@@ -30,7 +31,8 @@ const CONFIG_LOAD_TIMEOUT_MS = 10_000
 
 interface ParsedTalkBlock {
   enabled?: string
-  process?: string
+  summarize?: string
+  source?: string
   instruction?: string
   model?: string
   voice?: Record<string, string>
@@ -157,7 +159,13 @@ function toTalkConfig(raw: ParsedTalkBlock): DeepPartial<TalkConfig> {
   const cfg: DeepPartial<TalkConfig> = {}
 
   if (raw.enabled !== undefined) cfg.enabled = parseBool(raw.enabled, false)
-  if (raw.process !== undefined) cfg.process = parseBool(raw.process, true)
+  if (raw.summarize !== undefined) cfg.summarize = parseBool(raw.summarize, true)
+  if (raw.source !== undefined) {
+    const validSources = ["last-message", "last-paragraph", "last-sentence"]
+    cfg.source = validSources.includes(raw.source)
+      ? (raw.source as TalkConfig["source"])
+      : undefined
+  }
   if (raw.instruction !== undefined) cfg.instruction = raw.instruction
   if (raw.model !== undefined) cfg.model = raw.model
 
@@ -187,7 +195,8 @@ function mergeTalkConfig(
 ): TalkConfig {
   return {
     enabled: override.enabled ?? base.enabled,
-    process: override.process ?? base.process,
+    summarize: override.summarize ?? base.summarize,
+    source: override.source ?? base.source,
     instruction: override.instruction ?? base.instruction,
     model: override.model ?? base.model,
     voice: {

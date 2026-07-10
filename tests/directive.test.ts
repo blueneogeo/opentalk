@@ -47,7 +47,7 @@ describe("talk config resolution edge cases", () => {
     })
     vi.mocked(fs.readFileSync).mockReturnValue(talkMd(`talk:
   enabled: false
-  process: true
+  summarize: true
   instruction: Base instruction
   model: base-model
   voice:
@@ -69,7 +69,7 @@ describe("talk config resolution edge cases", () => {
       if (String(p).includes("talk.md")) {
         return talkMd(`talk:
   enabled: false
-  process: true
+  summarize: true
   instruction: Base
   model: base
   voice:
@@ -100,7 +100,7 @@ talk:
       if (String(p).includes("talk.md")) {
         return talkMd(`talk:
   enabled: false
-  process: true
+  summarize: true
   instruction: Base
   model: base
   voice:
@@ -129,7 +129,7 @@ talk:
       if (String(p).includes("talk.md")) {
         return talkMd(`talk:
   enabled: false
-  process: true
+  summarize: true
   instruction: Base
   model: base
   voice:
@@ -157,13 +157,13 @@ talk:
     expect(config!.voice.speed).toBe(2.5)
   })
 
-  it("process defaults to true when not specified", async () => {
+  it("summarize defaults to true when not specified", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(true)
     vi.mocked(fs.readFileSync).mockImplementation((p: any) => {
       if (String(p).includes("talk.md")) {
         return talkMd(`talk:
   enabled: false
-  process: true
+  summarize: true
   instruction: Base
   model: base
   voice:
@@ -182,6 +182,6 @@ talk:
     })
 
     const config = await getTalkConfig("test-agent")
-    expect(config!.process).toBe(true)
+    expect(config!.summarize).toBe(true)
   })
 })

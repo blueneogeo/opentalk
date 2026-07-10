@@ -3,8 +3,8 @@
  *
  * On session.idle, reads the agent's resolved `talk:` config (base defaults
  * from talk.md deep-merged with per-agent overrides):
- * - process: true  → spawns the talk subagent to summarize, then speaks
- * - process: false → speaks the raw response text directly
+ * - summarize: true  → spawns the talk subagent to summarize, then speaks
+ * - summarize: false → speaks the raw response text directly
  * - enabled: false → no speaking
  */
 import type { Plugin } from "@opencode-ai/plugin"
@@ -117,12 +117,12 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
       const config = await getTalkConfig(agentName)
       if (!config) return
 
-      // Extract the assistant's response text
-      const responseText = await getResponseText(client, sessionID)
+      // Extract the assistant's response text based on configured source
+      const responseText = await getResponseText(client, sessionID, config.source)
       if (!responseText || responseText.startsWith("🔊 ")) return
 
-      // process: false — speak the raw response directly
-      if (!config.process) {
+      // summarize: false — speak the raw response directly
+      if (!config.summarize) {
         const truncated = responseText.length > 1000
           ? responseText.slice(0, 997) + "..."
           : responseText
@@ -177,10 +177,11 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
   }
 }
 
-/** Extracts the last assistant's text content from a session. */
+/** Extracts the last assistant's text content from a session, scoped by source. */
 async function getResponseText(
   client: any,
   sessionID: string,
+  source: "last-message" | "last-paragraph" | "last-sentence" = "last-message",
 ): Promise<string | null> {
   try {
     const msgs = await client.session.messages({ path: { id: sessionID } })
@@ -194,13 +195,28 @@ async function getResponseText(
 
     const lastMsg = assistantMessages[assistantMessages.length - 1]
     const parts = (lastMsg.parts ?? []) as Array<{ type: string; text?: string }>
-    const text = parts
+    const fullText = parts
       .filter((p) => p.type === "text")
       .map((p) => p.text ?? "")
       .join("\n")
       .trim()
 
-    return text || null
+    if (!fullText) return null
+
+    switch (source) {
+      case "last-sentence": {
+        const sentences = fullText.split(/(?<=[.!?])\s+/)
+        const last = sentences.filter(s => s.trim()).pop()
+        return last?.trim() || null
+      }
+      case "last-paragraph": {
+        const paragraphs = fullText.split(/\n\s*\n/)
+        const last = paragraphs.filter(p => p.trim()).pop()
+        return last?.trim() || null
+      }
+      default:
+        return fullText
+    }
   } catch (err) {
     console.error("[OpenTalk] getResponseText failed:", err)
     return null

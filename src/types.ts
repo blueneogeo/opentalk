@@ -12,7 +12,8 @@ export interface VoiceConfig {
 /** Resolved talk configuration for a specific agent (base defaults + agent overrides merged) */
 export interface TalkConfig {
   enabled: boolean
-  process: boolean
+  summarize: boolean
+  source: "last-message" | "last-paragraph" | "last-sentence"
   instruction: string
   model: string
   voice: VoiceConfig
