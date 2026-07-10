@@ -5,9 +5,7 @@
 import { join } from "node:path"
 import { readFileSync, existsSync } from "node:fs"
 import { homedir } from "node:os"
-import type { SpeakDirective, SpeakMode } from "./types"
-
-const DEFAULT_MODE: SpeakMode = "extract"
+import type { SpeakDirective } from "./types"
 
 /**
  * Creates a speak directive cache and resolver.
@@ -25,8 +23,8 @@ export function createDirectiveResolver(directory: string) {
   }
 
   /**
-   * Reads the `speak:` and `speak_mode:` frontmatter properties
-   * from an agent markdown file. Returns null if no speak directive.
+   * Reads the `speak:` frontmatter property from an agent markdown file.
+   * Returns null if the agent has no speak directive.
    * Results are cached per agent name.
    */
   function getSpeakDirective(agentName: string): SpeakDirective | null {
@@ -45,18 +43,10 @@ export function createDirectiveResolver(directory: string) {
         }
 
         const value = speakMatch[1].trim()
-
-        // Parse optional speak_mode
-        const modeMatch = content.match(/^speak_mode:\s*(\w+)$/m)
-        const mode: SpeakMode =
-          modeMatch && (modeMatch[1] === "extract" || modeMatch[1] === "subagent")
-            ? (modeMatch[1] as SpeakMode)
-            : DEFAULT_MODE
-
         const directive: SpeakDirective =
           value === "true"
-            ? { type: "full", mode }
-            : { type: "instruction", value, mode }
+            ? { type: "full" }
+            : { type: "instruction", value }
 
         cache.set(agentName, directive)
         return directive

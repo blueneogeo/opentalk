@@ -1,9 +1,9 @@
 /**
  * OpenTalk — OpenCode plugin that speaks short summaries when agents finish.
  *
- * Two modes (configured per agent via `speak_mode:` frontmatter):
- * - extract (default): agent produces <speak> tags, plugin extracts them
- * - subagent: plugin spawns the speak subagent to summarize the response
+ * On session.idle, reads the agent's `speak:` directive:
+ * - speak: true → speaks the full response directly
+ * - speak: "..." → spawns the speak subagent to summarize, then speaks the result
  */
 import type { Plugin } from "@opencode-ai/plugin"
 import { log } from "./logger"
@@ -12,14 +12,13 @@ import {
   uninstallResponseSuppression,
   activateSuppression,
 } from "./response-suppression"
-import { createConfigLoader, getSpeakSystem } from "./config"
+import { createConfigLoader } from "./config"
 import { createDirectiveResolver } from "./directive"
-import { extractResponseText, injectMessage } from "./session"
+import { injectMessage } from "./session"
 import { doSpeak } from "./tts-engines/registry"
 import type { SpeakDirective } from "./types"
 
 const AGENT_NAME = "speak"
-const SPEAK_TAG_RE = /spoken:\s*(.+?)(?:\n|$)/
 
 class OpenTalkAbortError extends Error {
   constructor() {
@@ -60,59 +59,10 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
 
   let speakEnabled = true
   const sessionAgent = new Map<string, string>()
-  const agentsSeeded = new Set<string>()
-
-  function instructionFor(directive: SpeakDirective): string {
-    return directive.type === "full"
-      ? "summarize your full response in one sentence"
-      : directive.value
-  }
-
-  function buildSystemSuffix(directive: SpeakDirective): string | null {
-    if (directive.mode !== "extract") return null
-    const system = getSpeakSystem(directory)
-    return "\n\n" + system.replace("${SPEAK_INSTRUCTION}", instructionFor(directive))
-  }
-
-  function buildReminderSuffix(directive: SpeakDirective): string | null {
-    if (directive.mode !== "extract") return null
-    return "\n\n<system>In your thinking include: spoken: " + instructionFor(directive) + "</system>"
-  }
-
-  async function speakExtracted(responseText: string, sid: string): Promise<void> {
-    const match = responseText.match(SPEAK_TAG_RE)
-    if (!match || !match[1].trim()) return
-    const cfg = await getTtsConfig()
-    await doSpeak(match[1].trim(), cfg)
-    await injectMessage(client, sid, `🔊 ${match[1].trim()}`)
-  }
 
   return {
     dispose: async () => {
       uninstallResponseSuppression()
-    },
-
-    "experimental.chat.messages.transform": async (_input, output) => {
-      const messages = (output as Record<string, unknown>).messages as
-        | Array<{ info?: { role?: string; agent?: string }; parts?: Array<Record<string, unknown>> }>
-        | undefined
-      if (!messages || messages.length === 0) return
-
-      const lastMessage = messages[messages.length - 1]
-      if (lastMessage?.info?.role !== "user" || !lastMessage.info.agent) return
-
-      const directive = getSpeakDirective(lastMessage.info.agent)
-      if (!directive) return
-
-      const isFirst = !agentsSeeded.has(lastMessage.info.agent)
-      agentsSeeded.add(lastMessage.info.agent)
-      const suffix = isFirst
-        ? buildSystemSuffix(directive)
-        : buildReminderSuffix(directive)
-      if (!suffix) return
-
-      if (!lastMessage.parts) lastMessage.parts = []
-      lastMessage.parts.push({ type: "text", text: suffix })
     },
 
     "chat.message": async (input, output) => {
@@ -162,15 +112,11 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
       const directive = getSpeakDirective(agentName)
       if (!directive) return
 
-      const responseText = await extractResponseText(client, sessionID)
-      if (!responseText) return
-      if (responseText.startsWith("🔊 ")) return
+      // Extract the assistant's response text
+      const responseText = await getResponseText(client, sessionID)
+      if (!responseText || responseText.startsWith("🔊 ")) return
 
-      if (directive.mode === "extract") {
-        await speakExtracted(responseText, sessionID)
-        return
-      }
-
+      // speak: true — speak the full response directly
       if (directive.type === "full") {
         const truncated = responseText.length > 1000
           ? responseText.slice(0, 997) + "..."
@@ -181,6 +127,7 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
         return
       }
 
+      // speak: "instruction" — summarize via subagent
       const instruction = directive.value
       let ttsSessionId: string | undefined
 
@@ -224,5 +171,35 @@ export const OpenTalkPlugin: Plugin = async ({ client, directory }) => {
         }
       }
     },
+  }
+}
+
+/** Extracts the last assistant's text content from a session. */
+async function getResponseText(
+  client: any,
+  sessionID: string,
+): Promise<string | null> {
+  try {
+    const msgs = await client.session.messages({ path: { id: sessionID } })
+    const data = (msgs as Record<string, unknown>).data ?? msgs
+    if (!Array.isArray(data)) return null
+
+    const assistantMessages = (data as Array<Record<string, unknown>>).filter(
+      (m) => m.info && (m.info as Record<string, unknown>).role === "assistant",
+    )
+    if (assistantMessages.length === 0) return null
+
+    const lastMsg = assistantMessages[assistantMessages.length - 1]
+    const parts = (lastMsg.parts ?? []) as Array<{ type: string; text?: string }>
+    const text = parts
+      .filter((p) => p.type === "text")
+      .map((p) => p.text ?? "")
+      .join("\n")
+      .trim()
+
+    return text || null
+  } catch (err) {
+    console.error("[OpenTalk] getResponseText failed:", err)
+    return null
   }
 }

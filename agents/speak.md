@@ -57,17 +57,6 @@ tts:
   #
   # Alternative: custom base URL (if not using a provider).
   #   base_url: https://openrouter.ai/api/v1
-
-# ── Speak System Prompt (for extract mode) ──────────────────
-# Shown once on the first user message. ${SPEAK_INSTRUCTION}
-# is replaced at runtime with the per-agent speak: value.
-# ───────────────────────────────────────────────────────────
-speak_system: |
-  In your thinking, include a spoken notification:
-
-  spoken: ${SPEAK_INSTRUCTION}
-
-  One sentence, under 25 words, first person, conversational.
 ---
 You are a spoken notification system. The user cannot see the screen.
 Your entire response will be read aloud by a text-to-speech engine.
