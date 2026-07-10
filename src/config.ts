@@ -17,6 +17,7 @@ const DEFAULT_CONFIG: TtsConfig = {
   voice: "af_bella",
   speed: 1.0,
   responseFormat: "mp3",
+  summarize: "message",
 }
 
 const CONFIG_LOAD_TIMEOUT_MS = 10_000
@@ -114,6 +115,8 @@ async function buildConfig(
     model: rawBlock.model ?? DEFAULT_CONFIG.model,
     voice: rawBlock.voice ?? DEFAULT_CONFIG.voice,
     speed,
+    summarize:
+      rawBlock.summarize === "message" ? "message" : DEFAULT_CONFIG.summarize,
     responseFormat:
       rawBlock.response_format === "pcm"
         ? "pcm"
@@ -199,7 +202,7 @@ export function createConfigLoader(params: LoadConfigParams) {
         ),
       ]).catch(() => {
         console.warn("[OpenTalk] TTS config load timed out, falling back to say")
-        return { engine: "say" as const, model: "", voice: "", speed: 1.0, responseFormat: "mp3" as const }
+        return { engine: "say" as const, model: "", voice: "", speed: 1.0, responseFormat: "mp3" as const, summarize: "message" as const }
       })
       return result
     }
@@ -217,6 +220,7 @@ export function createConfigLoader(params: LoadConfigParams) {
           voice: "",
           speed: 1.0,
           responseFormat: "mp3" as const,
+          summarize: "message" as const,
         }
       })
       .then((cfg) => {

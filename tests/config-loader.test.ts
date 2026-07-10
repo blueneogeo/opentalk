@@ -35,6 +35,7 @@ describe("createConfigLoader", () => {
     expect(config.engine).toBe("kokoro")
     expect(config.voice).toBe("af_bella")
     expect(config.speed).toBe(1.0)
+    expect(config.summarize).toBe("message")
   })
 
   it("parses speak.md with kokoro engine", async () => {

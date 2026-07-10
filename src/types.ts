@@ -5,6 +5,7 @@ export interface TtsConfig {
   voice: string
   speed: number
   responseFormat: "mp3" | "pcm"
+  summarize: "paragraph" | "message"
   apiKey?: string
   baseUrl?: string
 }
