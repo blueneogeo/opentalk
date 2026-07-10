@@ -8,7 +8,7 @@ import type { VoiceConfig } from "../types"
 export const sayEngine: TtsEngine = {
   name: "say",
 
-  async speak(text: string, config: VoiceConfig): Promise<void> {
+  async speak(text: string, config: VoiceConfig, signal?: AbortSignal): Promise<void> {
     const voice = config.voice || "Samantha"
     const rate = Math.round((config.speed ?? 1.0) * 200).toString()
     const args = ["-v", voice, "-r", rate, text]
@@ -18,7 +18,14 @@ export const sayEngine: TtsEngine = {
         stdout: "ignore",
         stderr: "ignore",
       })
+
+      const onAbort = () => proc.kill()
+      signal?.addEventListener("abort", onAbort, { once: true })
+
       const exitCode = await proc.exited
+
+      signal?.removeEventListener("abort", onAbort)
+
       if (exitCode !== 0) {
         console.error(
           `[OpenTalk] say exited with code ${exitCode} (voice: ${voice}, rate: ${rate})`,

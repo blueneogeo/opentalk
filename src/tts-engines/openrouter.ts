@@ -9,10 +9,17 @@ import { writeFileSync, unlinkSync } from "node:fs"
 import type { TtsEngine } from "./types"
 import type { VoiceConfig } from "../types"
 
-async function playAndCleanup(filePath: string): Promise<void> {
+async function playAndCleanup(filePath: string, signal?: AbortSignal): Promise<void> {
   try {
     const proc = Bun.spawn(["afplay", filePath])
+
+    const onAbort = () => proc.kill()
+    signal?.addEventListener("abort", onAbort, { once: true })
+
     const exitCode = await proc.exited
+
+    signal?.removeEventListener("abort", onAbort)
+
     if (exitCode !== 0) {
       console.error(
         `[OpenTalk] afplay exited with code ${exitCode}`,
@@ -32,7 +39,7 @@ async function playAndCleanup(filePath: string): Promise<void> {
 export const openrouterEngine: TtsEngine = {
   name: "openrouter",
 
-  async speak(text: string, config: VoiceConfig): Promise<void> {
+  async speak(text: string, config: VoiceConfig, signal?: AbortSignal): Promise<void> {
     const { apiKey, baseUrl, model, voice, speed, responseFormat } = config
     const url = `${baseUrl ?? "https://openrouter.ai/api/v1"}/audio/speech`
 
@@ -59,9 +66,7 @@ export const openrouterEngine: TtsEngine = {
     const tmp = join(tmpdir(), `opentalk-${Date.now()}.mp3`)
     writeFileSync(tmp, buf)
 
-    // Fire-and-forget playback with cleanup
-    playAndCleanup(tmp).catch((err) => {
-      console.error("[OpenTalk] playback cleanup failed:", err)
-    })
+    // Await playback so the caller can sequence with interruption
+    await playAndCleanup(tmp, signal)
   },
 }

@@ -14,6 +14,9 @@ const engines = new Map<string, TtsEngine>()
 
 let _initialized = false
 
+/** Tracks the current speech — aborted before each new `doSpeak` call. */
+let _currentAbort: AbortController | null = null
+
 function ensureRegistered(): void {
   if (_initialized) return
   engines.set(sayEngine.name, sayEngine)
@@ -59,8 +62,16 @@ export async function doSpeak(
   }
 
   try {
-    await engine.speak(text, config)
+    // Abort any currently-running speech before starting new
+    if (_currentAbort) {
+      _currentAbort.abort()
+    }
+    _currentAbort = new AbortController()
+
+    await engine.speak(text, config, _currentAbort.signal)
   } catch (err) {
     console.error("[OpenTalk] doSpeak failed:", err)
+  } finally {
+    _currentAbort = null
   }
 }

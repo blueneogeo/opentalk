@@ -11,7 +11,7 @@ const KOKORO_URL = "http://127.0.0.1:8765"
 export const kokoroEngine: TtsEngine = {
   name: "kokoro",
 
-  async speak(text: string, config: VoiceConfig): Promise<void> {
+  async speak(text: string, config: VoiceConfig, _signal?: AbortSignal): Promise<void> {
     const voice = config.voice || "af_bella"
 
     const res = await fetch(`${KOKORO_URL}/speak`, {
